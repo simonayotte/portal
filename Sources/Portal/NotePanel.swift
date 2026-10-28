@@ -5,7 +5,7 @@ final class NotePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    init<Content: View>(rootView: Content) {
+    init<Content: View>(rootView: Content, frameAutosaveName: String? = "PortalNote") {
         // Non-activation must be set at creation, not added to an existing window.
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 700),
@@ -30,7 +30,7 @@ final class NotePanel: NSPanel {
         standardWindowButton(.zoomButton)?.isEnabled = false
         setTrafficLightsHidden(true)
         center()
-        setFrameAutosaveName("PortalNote")
+        if let frameAutosaveName { setFrameAutosaveName(frameAutosaveName) }
     }
 
     override func becomeKey() {
@@ -54,10 +54,11 @@ final class NotePanel: NSPanel {
 /// Shared surface for the editor and its command palettes.
 struct NoteBackground: View {
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var preferences: PortalPreferences = .shared
 
     var body: some View {
         WindowBackground()
-            .overlay(Color(nsColor: .windowBackgroundColor).opacity(0.15))
+            .overlay(Color(nsColor: .windowBackgroundColor).opacity(preferences.backgroundOpacity))
             .overlay(
                 colorScheme == .dark ? Color.black.opacity(0.2) : Color.white.opacity(0.35)
             )

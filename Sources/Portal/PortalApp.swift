@@ -6,7 +6,8 @@ struct PortalApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 
     var body: some Scene {
-        Settings { EmptyView() }
+        Settings { PreferencesView(preferences: .shared) }
+            .windowLevel(.floating)
     }
 }
 
@@ -24,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         notePanel.makeKeyAndOrderFront(nil)
+        SettingsAccess.shared.installShortcut()
         guard let button = statusItem.button else { return }
         button.image = NSImage(systemSymbolName: "app.background.dotted", accessibilityDescription: "Portal")
         button.target = self
@@ -46,12 +48,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        SettingsAccess.shared.removeShortcut()
         store.leaveCurrentNote()
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
         guard NSApp.currentEvent?.type == .rightMouseUp else { return toggleNote() }
         let menu = NSMenu()
+        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        menu.addItem(.separator())
         let shortcutTitle = Shortcut.saved.map { "Toggle Shortcut: \($0)…" } ?? "Set Toggle Shortcut…"
         menu.addItem(withTitle: shortcutTitle, action: #selector(recordShortcut), keyEquivalent: "").target = self
         menu.addItem(.separator())
@@ -66,6 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             notePanel.makeKeyAndOrderFront(nil)
         }
+    }
+
+    @objc private func openSettings() {
+        SettingsAccess.shared.show()
     }
 
     @objc private func recordShortcut() {

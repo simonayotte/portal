@@ -5,7 +5,7 @@ import Testing
 @MainActor
 @Test func notePanelIsConfiguredForNonactivatingInput() {
     _ = NSApplication.shared
-    let panel = NotePanel(rootView: EmptyView())
+    let panel = NotePanel(rootView: EmptyView(), frameAutosaveName: nil)
     defer { panel.close() }
 
     #expect(panel.styleMask.contains(.nonactivatingPanel))
@@ -25,7 +25,7 @@ import Testing
 @MainActor
 @Test func notePanelOnlyShowsTrafficLightsWhileFocused() {
     _ = NSApplication.shared
-    let panel = NotePanel(rootView: EmptyView())
+    let panel = NotePanel(rootView: EmptyView(), frameAutosaveName: nil)
     defer { panel.close() }
     let buttons: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
 
@@ -55,7 +55,7 @@ import Testing
             Button("Create Note") {}
                 .keyboardShortcut("n")
         }
-    })
+    }, frameAutosaveName: nil)
     defer { panel.close() }
     panel.contentView?.layoutSubtreeIfNeeded()
 
@@ -68,7 +68,11 @@ import Testing
 @Test(arguments: [ColorScheme.light, .dark])
 func noteBackgroundBlursBehindTheWindowWithoutActivation(_ colorScheme: ColorScheme) throws {
     _ = NSApplication.shared
-    let panel = NotePanel(rootView: NoteBackground().environment(\.colorScheme, colorScheme))
+    let suite = "PortalTests.background.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let preferences = PortalPreferences(defaults: defaults)
+    let panel = NotePanel(rootView: NoteBackground(preferences: preferences).environment(\.colorScheme, colorScheme), frameAutosaveName: nil)
     defer { panel.close() }
     let content = try #require(panel.contentView)
     content.layoutSubtreeIfNeeded()

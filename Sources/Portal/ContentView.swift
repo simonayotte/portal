@@ -46,6 +46,7 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 280, minHeight: 220)
+        .background { SettingsActionBridge() }
         .background {
             NoteBackground().ignoresSafeArea()
         }
@@ -182,6 +183,7 @@ struct ContentView: View {
                 } + pinNoteAction + [
                     PaletteItem(id: "daily-note", title: "Open Daily Note", shortcut: "⌘D") { store.openDailyNote() },
                     PaletteItem(id: "open-vault", title: "Open Vault…", perform: chooseVault),
+                    PaletteItem(id: "settings", title: "Settings…", shortcut: "⌘,") { SettingsAccess.shared.show() },
                 ],
                 actionLabel: "Run Action",
                 dismiss: closePalette

@@ -84,14 +84,18 @@ enum MarkdownStyler {
     static let tabWidth: CGFloat = 24
 
     static var baseAttributes: [NSAttributedString.Key: Any] {
-        [.font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraphStyle()]
+        baseAttributes(for: EditorTypography())
     }
 
-    private static func paragraphStyle(_ configure: (NSMutableParagraphStyle) -> Void = { _ in }) -> NSParagraphStyle {
+    static func baseAttributes(for typography: EditorTypography) -> [NSAttributedString.Key: Any] {
+        [.font: typography.baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraphStyle(typography)]
+    }
+
+    private static func paragraphStyle(_ typography: EditorTypography, _ configure: (NSMutableParagraphStyle) -> Void = { _ in }) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.lineSpacing = 3
+        style.lineSpacing = typography.scaled(3)
         style.tabStops = []
-        style.defaultTabInterval = tabWidth
+        style.defaultTabInterval = typography.scaled(tabWidth)
         configure(style)
         return style
     }
@@ -125,7 +129,10 @@ enum MarkdownStyler {
     private static let mathBlock = regex(#"^[ \t]*\$\$([\s\S]+?)\$\$[ \t]*$"#)
     private static let codeBlock = regex(#"^(```[^\n]*)\n([\s\S]*?)\n?^(```)[ \t]*$"#)
 
-    static func style(_ storage: NSTextStorage) {
+    static func style(_ storage: NSTextStorage, typography: EditorTypography = EditorTypography()) {
+        let baseAttributes = baseAttributes(for: typography)
+        let monoFont = typography.monoFont
+        let checkboxExtraWidth = typography.scaled(Self.checkboxExtraWidth)
         let string = storage.string as NSString
         let full = NSRange(location: 0, length: storage.length)
         func matches(_ regex: NSRegularExpression) -> [NSTextCheckingResult] {
@@ -145,12 +152,12 @@ enum MarkdownStyler {
 
         for m in matches(heading) {
             let level = m.range(at: 1).length - 1
-            let size: CGFloat = [28, 23, 20, 18, 17, 16][min(level, 6) - 1]
+            let size = typography.headingSize(level: level)
             storage.addAttributes([
                 .font: NSFont.systemFont(ofSize: size, weight: .bold),
-                .paragraphStyle: paragraphStyle {
-                    $0.paragraphSpacingBefore = level <= 2 ? 12 : 8
-                    $0.paragraphSpacing = 4
+                .paragraphStyle: paragraphStyle(typography) {
+                    $0.paragraphSpacingBefore = typography.scaled(level <= 2 ? 12 : 8)
+                    $0.paragraphSpacing = typography.scaled(4)
                 },
             ], range: m.range)
             hide(m.range(at: 1))
@@ -213,7 +220,7 @@ enum MarkdownStyler {
             storage.addAttribute(.markdownImage, value: ImageEmbed(source: source, isWikilink: isWikilink, width: width), range: m.range)
         }
         for m in matches(table) {
-            styleTable(m.range, in: storage) { hide($0) }
+            styleTable(m.range, in: storage, typography: typography) { hide($0) }
         }
         for m in matches(listItem) {
             let indent = string.substring(with: m.range(at: 1))
@@ -247,16 +254,16 @@ enum MarkdownStyler {
                 if isBullet { storage.addAttribute(.markdownBullet, value: true, range: marker) }
             }
             let hangingIndent = width(visiblePrefix) + (box.location != NSNotFound && isBullet ? checkboxExtraWidth : 0)
-            storage.addAttribute(.paragraphStyle, value: paragraphStyle { $0.headIndent = hangingIndent }, range: m.range)
+            storage.addAttribute(.paragraphStyle, value: paragraphStyle(typography) { $0.headIndent = hangingIndent }, range: m.range)
         }
         for m in matches(quote) {
             hide(m.range(at: 1))
             storage.addAttributes([
                 .foregroundColor: NSColor.secondaryLabelColor,
                 .markdownBlock: MarkdownBlock.quote.rawValue,
-                .paragraphStyle: paragraphStyle {
-                    $0.firstLineHeadIndent = 14
-                    $0.headIndent = 14
+                .paragraphStyle: paragraphStyle(typography) {
+                    $0.firstLineHeadIndent = typography.scaled(14)
+                    $0.headIndent = typography.scaled(14)
                 },
             ], range: string.lineRange(for: m.range)) // Include the newline so consecutive lines share one bar.
         }
@@ -267,10 +274,10 @@ enum MarkdownStyler {
         var codeAttributes = baseAttributes
         codeAttributes[.font] = monoFont
         codeAttributes[.markdownBlock] = MarkdownBlock.code.rawValue
-        codeAttributes[.paragraphStyle] = paragraphStyle {
-            $0.firstLineHeadIndent = 12
-            $0.headIndent = 12
-            $0.tailIndent = -12
+        codeAttributes[.paragraphStyle] = paragraphStyle(typography) {
+            $0.firstLineHeadIndent = typography.scaled(12)
+            $0.headIndent = typography.scaled(12)
+            $0.tailIndent = typography.scaled(-12)
         }
         for m in matches(mathBlock) {
             var attributes = codeAttributes
@@ -291,14 +298,14 @@ enum MarkdownStyler {
             }
             for fence in [m.range(at: 1), m.range(at: 3)] {
                 storage.addAttributes([
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                    .font: NSFont.monospacedSystemFont(ofSize: typography.scaled(11), weight: .medium),
                     .foregroundColor: NSColor.tertiaryLabelColor,
                 ], range: fence)
             }
         }
         for m in matches(frontmatter) {
             var attributes = baseAttributes
-            attributes[.font] = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            attributes[.font] = NSFont.monospacedSystemFont(ofSize: typography.scaled(12), weight: .regular)
             attributes[.foregroundColor] = NSColor.secondaryLabelColor
             // Like Obsidian, empty properties are not shown.
             let properties = string.substring(with: m.range).split(separator: "\n").dropFirst().dropLast()
@@ -312,7 +319,7 @@ enum MarkdownStyler {
     }
 
     /// Lines a table up in columns: off the active line its pipes act as tabs to stops past each column's widest cell.
-    private static func styleTable(_ range: NSRange, in storage: NSTextStorage, hide: (NSRange) -> Void) {
+    private static func styleTable(_ range: NSRange, in storage: NSTextStorage, typography: EditorTypography, hide: (NSRange) -> Void) {
         let string = storage.string as NSString
         var lines: [NSRange] = []
         string.enumerateSubstrings(in: range, options: [.byLines, .substringNotRequired]) { _, line, _, _ in lines.append(line) }
@@ -376,7 +383,7 @@ enum MarkdownStyler {
                 if column < widths.count { widths[column] = max(widths[column], cellWidth) } else { widths.append(cellWidth) }
             }
         }
-        let padding = tableCellPadding
+        let padding = typography.scaled(tableCellPadding)
         let edges = widths.reduce(into: [CGFloat(0)]) { $0.append($0.last! + $1 + padding * 2) }
         let tabs = widths.indices.map { column in
             let alignment = column < alignments.count ? alignments[column] : .left
@@ -401,10 +408,10 @@ enum MarkdownStyler {
             for column in cells.indices.dropFirst() { hide(NSRange(location: cells[column].location - 1, length: 1)) }
             storage.addAttributes([
                 .markdownTableRow: TableRow(edges: edges, isHeader: row.isHeader),
-                .paragraphStyle: paragraphStyle {
+                .paragraphStyle: paragraphStyle(typography) {
                     $0.lineSpacing = 0
-                    $0.paragraphSpacingBefore = 5
-                    $0.paragraphSpacing = 5
+                    $0.paragraphSpacingBefore = typography.scaled(5)
+                    $0.paragraphSpacing = typography.scaled(5)
                     $0.tabStops = tabs
                     $0.firstLineHeadIndent = leading == nil ? padding : 0
                 },

@@ -7,6 +7,7 @@ struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
     let noteID: URL?
     let controller: EditorController
+    @ObservedObject var preferences: PortalPreferences = .shared
 
     static let inset = NSSize(width: 18, height: 14)
 
@@ -14,6 +15,7 @@ struct MarkdownEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = MarkdownTextView.make()
+        textView.updateTextSize(preferences.editorTextSize)
         textView.delegate = context.coordinator
         controller.textView = textView
 
@@ -33,6 +35,7 @@ struct MarkdownEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.text = $text
         context.coordinator.load(text, noteID: noteID)
+        context.coordinator.textView?.updateTextSize(preferences.editorTextSize)
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
@@ -213,6 +216,7 @@ struct MarkdownEditor: NSViewRepresentable {
 
 /// TextKit 1 text view with Markdown editing behaviors: Vim keys, list continuation, list indenting and shortcuts.
 final class MarkdownTextView: NSTextView {
+    private(set) var typography = EditorTypography()
     lazy var vim = VimEngine(view: self)
     var openLink: ((String) -> Void)?
     /// Saves pasted image data (with its file extension) to the vault and returns the embed to insert.
@@ -271,8 +275,31 @@ final class MarkdownTextView: NSTextView {
 
     func restyle() {
         guard let textStorage else { return }
-        MarkdownStyler.style(textStorage)
-        typingAttributes = MarkdownStyler.baseAttributes
+        MarkdownStyler.style(textStorage, typography: typography)
+        typingAttributes = MarkdownStyler.baseAttributes(for: typography)
+    }
+
+    /// A preferences change is attribute-only: never reload the document or reset its undo/Vim state.
+    func updateTextSize(_ size: Double) {
+        let updated = EditorTypography(textSize: size)
+        guard typography != updated else { return }
+        let selection = selectedRanges
+        let affinity = selectionAffinity
+        let scrollView = enclosingScrollView
+        let origin = scrollView?.contentView.bounds.origin
+        let undo = undoManager
+        let wasUndoEnabled = undo?.isUndoRegistrationEnabled == true
+        if wasUndoEnabled { undo?.disableUndoRegistration() }
+        defer { if wasUndoEnabled { undo?.enableUndoRegistration() } }
+
+        typography = updated
+        restyle()
+        if let textContainer { layoutManager?.ensureLayout(for: textContainer) }
+        if selectedRanges != selection { setSelectedRanges(selection, affinity: affinity, stillSelecting: false) }
+        if let scrollView, let origin {
+            scrollView.contentView.scroll(to: origin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
     }
 
     /// Reveals syntax on the line(s) holding the selection and hides it everywhere else.
