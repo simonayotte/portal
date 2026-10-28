@@ -75,7 +75,7 @@ struct ContentView: View {
     }
 
     private var editorView: some View {
-        MarkdownEditor(text: $store.text, controller: editor)
+        MarkdownEditor(text: $store.text, noteID: store.selectedID, controller: editor)
             .overlay(alignment: .topLeading) {
                 if store.text.isEmpty {
                     Text("Start writing...")

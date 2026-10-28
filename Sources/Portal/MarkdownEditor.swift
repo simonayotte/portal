@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// are hidden everywhere except the line being edited.
 struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
+    let noteID: URL?
     let controller: EditorController
 
     static let inset = NSSize(width: 18, height: 14)
@@ -16,50 +17,180 @@ struct MarkdownEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         controller.textView = textView
 
-        let scrollView = NSScrollView()
+        let scrollView = PositionRestoringScrollView()
         scrollView.documentView = textView
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.findBarPosition = .aboveContent
 
-        context.coordinator.textView = textView
-        context.coordinator.load(text)
-        DispatchQueue.main.async { textView.window?.makeFirstResponder(textView) }
+        context.coordinator.attach(to: scrollView)
+        context.coordinator.load(text, noteID: noteID)
+        DispatchQueue.main.async { [weak coordinator = context.coordinator] in coordinator?.focusInitially() }
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        if context.coordinator.textView?.string != text {
-            context.coordinator.load(text)
-        }
+        context.coordinator.text = $text
+        context.coordinator.load(text, noteID: noteID)
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.detach()
     }
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
         weak var textView: MarkdownTextView?
+        private weak var scrollView: NSScrollView?
+        private let positions: NotePositionStore
+        private var noteID: URL?
+        private var hasLoaded = false
+        private var initialFocusPending = true
+        private var isRestoring = false
+        private var pendingScroll: NSPoint?
+        private var saveTask: Task<Void, Never>?
 
-        init(text: Binding<String>) { self.text = text }
+        init(text: Binding<String>, positions: NotePositionStore = .shared) {
+            self.text = text
+            self.positions = positions
+        }
 
-        func load(_ string: String) {
+        func attach(to scrollView: NSScrollView) {
+            self.scrollView = scrollView
+            textView = scrollView.documentView as? MarkdownTextView
+            textView?.delegate = self
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            (scrollView as? PositionRestoringScrollView)?.didLayout = { [weak self] in self?.restoreScroll() }
+            let center = NotificationCenter.default
+            center.addObserver(self, selector: #selector(boundsChanged), name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+            center.addObserver(self, selector: #selector(flushPosition), name: NSApplication.willTerminateNotification, object: nil)
+            center.addObserver(self, selector: #selector(flushPosition), name: NSApplication.didResignActiveNotification, object: nil)
+            center.addObserver(self, selector: #selector(windowWillClose), name: NSWindow.willCloseNotification, object: nil)
+        }
+
+        func load(_ string: String, noteID: URL?) {
             guard let textView else { return }
+            let changedNote = !hasLoaded || self.noteID != noteID
+            guard changedNote || textView.string != string else { return }
+            // Capture while the old document and its selection still belong to the old ID.
+            let previous = currentPosition()
+            if hasLoaded, changedNote { flushPosition() }
+            if hasLoaded { initialFocusPending = false }
+            saveTask?.cancel()
+            isRestoring = true
+            self.noteID = noteID
+            hasLoaded = true
+            let saved = changedNote ? noteID.flatMap { positions.position(for: $0) } : previous
             (textView.layoutManager as? MarkdownLayoutManager)?.forgetImages()
             textView.replaceNoteContents(with: string)
             textView.restyle()
+            let start = MarkdownStyler.bodyStart(of: string as NSString)
+            let position = (saved ?? NotePosition(
+                selection: NSRange(location: start, length: 0), scrollOrigin: .zero,
+                vim: .init(mode: .normal, cursor: start, anchor: start)
+            )).clamped(toUTF16Length: (string as NSString).length)
+            textView.vim.restore(selection: position.selection, state: position.vim)
             textView.updateActiveLine()
+            textView.breakUndoCoalescing()
             textView.undoManager?.removeAllActions()
-            textView.vim.reset()
+            pendingScroll = position.scrollOrigin
+            isRestoring = false
+            restoreScroll()
+        }
+
+        /// Only creation requests focus; note switches and reloads must never take it.
+        func focusInitially() {
+            guard initialFocusPending else { return }
+            initialFocusPending = false
+            guard let textView, let window = textView.window, window.isKeyWindow,
+                  let position = currentPosition() else { return }
+            isRestoring = true
+            _ = window.makeFirstResponder(textView)
+            // Becoming first responder may reveal the caret or otherwise change the viewport.
+            textView.vim.restore(selection: position.selection, state: position.vim)
+            textView.updateActiveLine()
+            pendingScroll = position.scrollOrigin
+            isRestoring = false
+            restoreScroll()
+        }
+
+        private func currentPosition() -> NotePosition? {
+            guard hasLoaded, let textView, let scrollView else { return nil }
+            return NotePosition(
+                selection: textView.selectedRange(),
+                scrollOrigin: pendingScroll ?? scrollView.contentView.bounds.origin,
+                vim: textView.vim.selectionState
+            ).clamped(toUTF16Length: (textView.string as NSString).length)
+        }
+
+        private func restoreScroll() {
+            guard !isRestoring, let origin = pendingScroll, let textView, let scrollView,
+                  scrollView.contentSize.width > 0, scrollView.contentSize.height > 0 else { return }
+            isRestoring = true
+            if let container = textView.textContainer {
+                textView.layoutManager?.ensureLayout(for: container)
+            }
+            textView.sizeToFit()
+            var bounds = scrollView.contentView.bounds
+            bounds.origin = origin
+            let clamped = scrollView.contentView.constrainBoundsRect(bounds)
+            scrollView.contentView.scroll(to: clamped.origin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            pendingScroll = nil
+            isRestoring = false
+        }
+
+        private func scheduleSave() {
+            guard !isRestoring, hasLoaded, noteID != nil else { return }
+            saveTask?.cancel()
+            saveTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                self?.flushPosition()
+            }
+        }
+
+        @objc private func boundsChanged(_ notification: Notification) {
+            guard !isRestoring else { return }
+            restoreScroll()
+            scheduleSave()
+        }
+
+        @objc private func flushPosition() {
+            saveTask?.cancel()
+            saveTask = nil
+            guard let noteID, let position = currentPosition() else { return }
+            positions.save(position, for: noteID)
+        }
+
+        @objc private func windowWillClose(_ notification: Notification) {
+            if let window = notification.object as? NSWindow, window === textView?.window { flushPosition() }
+        }
+
+        func detach() {
+            flushPosition()
+            NotificationCenter.default.removeObserver(self)
+            (scrollView as? PositionRestoringScrollView)?.didLayout = nil
+            textView?.delegate = nil
+            textView = nil
+            scrollView = nil
+            hasLoaded = false
+            initialFocusPending = false
         }
 
         func textDidChange(_ notification: Notification) {
-            guard let textView else { return }
+            guard !isRestoring, let textView else { return }
             textView.restyle()
             text.wrappedValue = textView.string
+            scheduleSave()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
+            guard !isRestoring else { return }
             textView?.updateActiveLine()
+            scheduleSave()
         }
 
         /// Toggles `- [ ]` / `- [x]` when a checkbox is clicked, and follows `[[wikilinks]]`.

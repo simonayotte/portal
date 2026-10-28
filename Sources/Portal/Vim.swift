@@ -1,6 +1,6 @@
 import AppKit
 
-enum VimMode {
+enum VimMode: String, Codable {
     case normal, insert, visual, visualLine
 
     var isVisual: Bool { self == .visual || self == .visualLine }
@@ -23,6 +23,27 @@ final class VimEngine {
     init(view: MarkdownTextView) { self.view = view }
 
     private var buffer: Buffer { Buffer(view.string as NSString) }
+
+    struct SelectionState: Codable, Equatable {
+        var mode: VimMode
+        var cursor: Int
+        var anchor: Int
+    }
+
+    var selectionState: SelectionState {
+        SelectionState(mode: mode, cursor: mode == .insert ? view.selectedRange().location : cursor, anchor: anchor)
+    }
+
+    /// Restore without sync(): its scroll-to-cursor would discard the saved reading offset.
+    func restore(selection: NSRange, state: SelectionState) {
+        keys = []
+        column = nil
+        mode = state.mode
+        cursor = state.cursor
+        anchor = state.anchor
+        view.setSelectedRange(selection)
+        view.showBlockCursor(at: mode == .insert ? nil : cursor)
+    }
 
     // MARK: Input
 
