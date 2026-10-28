@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 
-/// Renders Mermaid diagrams to images in an offscreen web view, one block at a time.
+/// Renders Mermaid diagrams and math to images in an offscreen web view, one block at a time.
 @MainActor
 final class BlockRenderer: NSObject, WKNavigationDelegate {
     static let shared = BlockRenderer()

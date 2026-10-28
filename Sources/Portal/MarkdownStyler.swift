@@ -43,10 +43,10 @@ final class ImageEmbed: NSObject {
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp", "svg"]
 }
 
-/// A block drawn from its source, like a Mermaid diagram.
+/// A block drawn from its source: a Mermaid diagram or LaTeX math.
 final class RenderedBlock: NSObject, Sendable {
     enum Kind: String {
-        case mermaid
+        case mermaid, math
     }
 
     let kind: Kind
@@ -122,6 +122,7 @@ enum MarkdownStyler {
     private static let rule = regex(#"^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$"#)
     private static let table = regex(#"^.*\|.*\n(?=.*\|)[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*(?:\n.*\|.*)*$"#)
     private static let tableCellPadding: CGFloat = 10
+    private static let mathBlock = regex(#"^[ \t]*\$\$([\s\S]+?)\$\$[ \t]*$"#)
     private static let codeBlock = regex(#"^(```[^\n]*)\n([\s\S]*?)\n?^(```)[ \t]*$"#)
 
     static func style(_ storage: NSTextStorage) {
@@ -263,16 +264,22 @@ enum MarkdownStyler {
             hide(m.range)
             storage.addAttribute(.markdownBlock, value: MarkdownBlock.rule.rawValue, range: m.range)
         }
-        for m in matches(codeBlock) {
-            var attributes = baseAttributes
-            attributes[.font] = monoFont
-            attributes[.markdownBlock] = MarkdownBlock.code.rawValue
-            attributes[.paragraphStyle] = paragraphStyle {
-                $0.firstLineHeadIndent = 12
-                $0.headIndent = 12
-                $0.tailIndent = -12
-            }
+        var codeAttributes = baseAttributes
+        codeAttributes[.font] = monoFont
+        codeAttributes[.markdownBlock] = MarkdownBlock.code.rawValue
+        codeAttributes[.paragraphStyle] = paragraphStyle {
+            $0.firstLineHeadIndent = 12
+            $0.headIndent = 12
+            $0.tailIndent = -12
+        }
+        for m in matches(mathBlock) {
+            var attributes = codeAttributes
+            attributes[.markdownMarker] = true
+            attributes[.markdownRendered] = RenderedBlock(kind: .math, source: string.substring(with: m.range(at: 1)), range: m.range)
             storage.setAttributes(attributes, range: m.range)
+        }
+        for m in matches(codeBlock) {
+            storage.setAttributes(codeAttributes, range: m.range)
             let code = m.range(at: 2)
             let language = string.substring(with: m.range(at: 1)).dropFirst(3).split(separator: " ").first.map(String.init) ?? ""
             for token in SyntaxHighlighter.tokens(in: string.substring(with: code), language: language.lowercased()) {

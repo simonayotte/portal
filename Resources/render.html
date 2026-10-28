@@ -2,34 +2,50 @@
 <html>
 <head>
 <meta charset="utf-8">
+<link rel="stylesheet" href="katex/katex.min.css">
+<script src="katex/katex.min.js"></script>
 <script src="mermaid.min.js"></script>
 <style>
   html, body { margin: 0; background: transparent; font: 16px -apple-system, sans-serif; }
-  #output { display: inline-block; padding: 4px; }
+  #output { display: inline-block; padding: 4px; color: rgba(0, 0, 0, 0.85); }
+  .dark #output { color: rgba(255, 255, 255, 0.85); }
+  .katex-display { margin: 0; }
 </style>
 </head>
 <body>
 <div id="output"></div>
 <script>
   let count = 0
+  // KaTeX's fonts, loaded up front: text drawn while a font loads is invisible in the snapshot.
+  const fonts = Promise.all([...document.fonts].map(face => face.load()))
 
   // Renders a block into #output and returns its size, or null when the source does not parse.
   async function render(kind, source, dark) {
     const output = document.getElementById("output")
+    document.body.className = dark ? "dark" : ""
     try {
-      mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, theme: dark ? "dark" : "default" })
-      output.innerHTML = (await mermaid.render(`diagram${count++}`, source)).svg
-      // Natural size instead of the container's width.
-      const svg = output.querySelector("svg"), box = svg.viewBox.baseVal
-      svg.setAttribute("width", box.width)
-      svg.setAttribute("height", box.height)
-      svg.style.maxWidth = "none"
+      if (kind === "math") {
+        await fonts
+        katex.render(source, output, { displayMode: true })
+      } else {
+        await renderDiagram(output, source, dark)
+      }
     } catch {
       output.innerHTML = ""
       return null
     }
     const rect = output.getBoundingClientRect()
     return { width: Math.ceil(rect.width), height: Math.ceil(rect.height) }
+  }
+
+  async function renderDiagram(output, source, dark) {
+    mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, theme: dark ? "dark" : "default" })
+    output.innerHTML = (await mermaid.render(`diagram${count++}`, source)).svg
+    // Natural size instead of the container's width.
+    const svg = output.querySelector("svg"), box = svg.viewBox.baseVal
+    svg.setAttribute("width", box.width)
+    svg.setAttribute("height", box.height)
+    svg.style.maxWidth = "none"
   }
 </script>
 </body>
