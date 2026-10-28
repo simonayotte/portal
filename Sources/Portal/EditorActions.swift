@@ -1,6 +1,6 @@
 import AppKit
 
-/// Gives SwiftUI a handle on the editor: focus it and run formatting actions on it.
+/// Gives SwiftUI a handle on the editor: focus it and run editor actions on it.
 @MainActor
 final class EditorController {
     weak var textView: MarkdownTextView? {
@@ -25,13 +25,17 @@ final class EditorController {
         textView?.window?.makeFirstResponder(textView)
     }
 
+    func findInNote() {
+        textView?.find(.showFindInterface)
+    }
+
     func perform(_ action: MarkdownAction) {
         focus()
         if let textView { action.perform(textView) }
     }
 }
 
-/// A Markdown insertion listed in the Action Panel.
+/// An editor action listed in the Action Panel.
 struct MarkdownAction: Identifiable {
     let title: String
     var shortcut: String?
@@ -40,6 +44,7 @@ struct MarkdownAction: Identifiable {
     var id: String { title }
 
     @MainActor static let all: [MarkdownAction] = [
+        MarkdownAction(title: "Find in Note", shortcut: "⌘F") { $0.find(.showFindInterface) },
         MarkdownAction(title: "Insert: Bold", shortcut: "⌘B") { $0.toggleWrap("**") },
         MarkdownAction(title: "Insert: Italic", shortcut: "⌘I") { $0.toggleWrap("*") },
         MarkdownAction(title: "Insert: Strikethrough") { $0.toggleWrap("~~") },

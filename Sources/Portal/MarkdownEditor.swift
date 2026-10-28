@@ -21,6 +21,7 @@ struct MarkdownEditor: NSViewRepresentable {
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.findBarPosition = .aboveContent
 
         context.coordinator.textView = textView
         context.coordinator.load(text)
@@ -44,7 +45,7 @@ struct MarkdownEditor: NSViewRepresentable {
         func load(_ string: String) {
             guard let textView else { return }
             (textView.layoutManager as? MarkdownLayoutManager)?.forgetImages()
-            textView.string = string
+            textView.replaceNoteContents(with: string)
             textView.restyle()
             textView.updateActiveLine()
             textView.undoManager?.removeAllActions()
@@ -97,6 +98,9 @@ final class MarkdownTextView: NSTextView {
         let textView = MarkdownTextView(usingTextLayoutManager: false)
         textView.textContainer?.replaceLayoutManager(MarkdownLayoutManager())
         textView.isRichText = false
+        textView.usesFindPanel = false
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
         textView.allowsUndo = true
         textView.drawsBackground = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -114,6 +118,7 @@ final class MarkdownTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, closeFindBar() { return }
         if !vim.handle(event) { super.keyDown(with: event) }
     }
 
@@ -271,6 +276,7 @@ final class MarkdownTextView: NSTextView {
     // MARK: Formatting shortcuts
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if performFindKeyEquivalent(with: event) { return true }
         guard window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         switch (modifiers, event.charactersIgnoringModifiers?.lowercased()) {
