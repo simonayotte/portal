@@ -34,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         guard let button = statusItem.button else { return }
-        button.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "Portal")
+        button.image = NSImage(systemSymbolName: "app.background.dotted", accessibilityDescription: "Portal")
         button.target = self
         button.action = #selector(statusItemClicked)
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
