@@ -68,6 +68,11 @@ struct ContentView: View {
             editor.saveImage = { store.saveImage($0, fileExtension: $1) }
             editor.resolveImage = { store.resolveImage($0) }
         }
+        .onChange(of: appearsActive) { _, isActive in
+            guard !isActive else { return }
+            hoverTask?.cancel()
+            tooltip = nil
+        }
     }
 
     private var editorView: some View {
@@ -129,6 +134,9 @@ struct ContentView: View {
                     .onHover { hover(action, isHovering: $0) }
                 }
             }
+            .opacity(appearsActive ? 1 : 0)
+            .allowsHitTesting(appearsActive)
+            .accessibilityHidden(!appearsActive)
         }
         .sharedBackgroundVisibility(.hidden)
     }
