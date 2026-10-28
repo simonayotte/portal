@@ -123,13 +123,13 @@ final class MarkdownTextView: NSTextView {
     }
 
     private var markdownLayoutManager: MarkdownLayoutManager? { layoutManager as? MarkdownLayoutManager }
-    private lazy var caretColor = insertionPointColor
-
     /// Draws Vim's block cursor on the character at `index`, or the thin caret when `nil`.
     func showBlockCursor(at index: Int?) {
         guard let layoutManager = markdownLayoutManager, layoutManager.blockCursor != index else { return }
         layoutManager.blockCursor = index
-        insertionPointColor = index == nil ? caretColor : .clear
+        // `nil` resets the thin caret to the system color; it is hidden behind the block cursor.
+        insertionPointColor = index == nil ? nil : .clear
+        updateInsertionPointStateAndRestartTimer(true)
         needsDisplay = true
     }
 
