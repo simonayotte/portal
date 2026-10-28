@@ -35,6 +35,7 @@ struct ContentView: View {
     @State private var hoverTask: Task<Void, Never>?
     @State private var palette: Palette?
     @State private var editor = EditorController()
+    @State private var navigation = NoteNavigation()
 
     var body: some View {
         Group {
@@ -67,6 +68,9 @@ struct ContentView: View {
             guard !isActive else { return }
             hoverTask?.cancel()
             tooltip = nil
+        }
+        .onChange(of: store.selectedID, initial: true) { _, id in
+            if let id { navigation.recordOpened(id) }
         }
     }
 
@@ -175,7 +179,7 @@ struct ContentView: View {
                 prompt: "Search actions...",
                 items: MarkdownAction.all.map { action in
                     PaletteItem(id: action.id, title: action.title, shortcut: action.shortcut) { editor.perform(action) }
-                } + [
+                } + pinNoteAction + [
                     PaletteItem(id: "daily-note", title: "Open Daily Note", shortcut: "⌘D") { store.openDailyNote() },
                     PaletteItem(id: "open-vault", title: "Open Vault…", perform: chooseVault),
                 ],
@@ -185,8 +189,11 @@ struct ContentView: View {
         case .notes:
             CommandPalette(
                 prompt: "Search notes...",
-                items: store.notes.map { note in
-                    PaletteItem(id: note.id.absoluteString, title: note.title, detail: store.folder(of: note)) {
+                items: navigation.ordered(store.notes).map { note in
+                    PaletteItem(
+                        id: NoteNavigation.identity(note.id), title: note.title, detail: store.folder(of: note),
+                        isPinned: navigation.isPinned(note.id), togglePin: { navigation.togglePin(note.id) }
+                    ) {
                         store.select(note.id)
                     }
                 },
@@ -194,6 +201,13 @@ struct ContentView: View {
                 dismiss: closePalette
             )
         }
+    }
+
+    private var pinNoteAction: [PaletteItem] {
+        guard let note = store.selected else { return [] }
+        return [PaletteItem(id: "toggle-note-pin", title: navigation.isPinned(note.id) ? "Unpin Current Note" : "Pin Current Note") {
+            navigation.togglePin(note.id)
+        }]
     }
 
     /// Shows the tooltip after a short delay; once visible, it follows the pointer between buttons instantly.

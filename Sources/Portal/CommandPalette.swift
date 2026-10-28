@@ -7,6 +7,8 @@ struct PaletteItem: Identifiable {
     var shortcut: String?
     /// Trailing secondary text.
     var detail: String?
+    var isPinned = false
+    var togglePin: (() -> Void)?
     let perform: () -> Void
 }
 
@@ -25,16 +27,17 @@ struct CommandPalette: View {
     private static let maxVisibleRows = 10
 
     private var results: [PaletteItem] {
-        let query = query.trimmingCharacters(in: .whitespaces)
-        return query.isEmpty ? items : items.filter {
-            $0.title.localizedCaseInsensitiveContains(query) || $0.detail?.localizedCaseInsensitiveContains(query) == true
+        FuzzyMatcher.ranked(items, query: query) { item in
+            guard let detail = item.detail else { return [item.title] }
+            return [item.title, detail, "\(detail)/\(item.title)"]
         }
     }
 
     var body: some View {
+        let results = results
         VStack(spacing: 0) {
             searchField
-            list
+            list(results)
             Divider()
             footer
         }
@@ -49,6 +52,9 @@ struct CommandPalette: View {
         }
         .onAppear { selection = results.first?.id }
         .onChange(of: query) { selection = results.first?.id }
+        .onChange(of: items.map(\.id)) {
+            if !results.contains(where: { $0.id == selection }) { selection = results.first?.id }
+        }
     }
 
     private var searchField: some View {
@@ -64,14 +70,13 @@ struct CommandPalette: View {
         .padding(8)
     }
 
-    private var list: some View {
+    private func list(_ results: [PaletteItem]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: Self.rowSpacing) {
                     ForEach(results) { item in
-                        PaletteRow(item: item, isSelected: item.id == selection)
+                        PaletteRow(item: item, isSelected: item.id == selection, run: { run(item) })
                             .id(item.id)
-                            .onTapGesture { run(item) }
                             .onHover { if $0 { selection = item.id } }
                     }
                 }
@@ -122,23 +127,42 @@ struct CommandPalette: View {
 private struct PaletteRow: View {
     let item: PaletteItem
     let isSelected: Bool
+    let run: () -> Void
 
     var body: some View {
-        HStack {
-            Text(item.title)
-                .lineLimit(1)
-            Spacer(minLength: 12)
-            if let shortcut = item.shortcut {
-                HStack(spacing: 3) {
-                    ForEach(Array(shortcut.enumerated()), id: \.offset) { _, key in
-                        KeyCap(String(key), onAccent: isSelected)
+        HStack(spacing: 6) {
+            Button(action: run) {
+                HStack {
+                    Text(item.title)
+                        .lineLimit(1)
+                    Spacer(minLength: 12)
+                    if let shortcut = item.shortcut {
+                        HStack(spacing: 3) {
+                            ForEach(Array(shortcut.enumerated()), id: \.offset) { _, key in
+                                KeyCap(String(key), onAccent: isSelected)
+                            }
+                        }
+                    }
+                    if let detail = item.detail {
+                        Text(detail)
+                            .font(.system(size: 13))
+                            .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(.rect)
             }
-            if let detail = item.detail {
-                Text(detail)
-                    .font(.system(size: 13))
-                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
+            .buttonStyle(.plain)
+            if let togglePin = item.togglePin {
+                Button(action: togglePin) {
+                    Image(systemName: item.isPinned ? "pin.fill" : "pin")
+                        .font(.system(size: 12))
+                        .frame(width: 20, height: CommandPalette.rowHeight)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(item.isPinned ? "Unpin" : "Pin") \(item.title)")
+                .help(item.isPinned ? "Unpin Note" : "Pin Note")
             }
         }
         .font(.system(size: 14))
