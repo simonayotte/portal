@@ -164,7 +164,10 @@ struct ContentView: View {
                 prompt: "Search actions...",
                 items: MarkdownAction.all.map { action in
                     PaletteItem(id: action.id, title: action.title, shortcut: action.shortcut) { editor.perform(action) }
-                } + [PaletteItem(id: "open-vault", title: "Open Vault…", perform: chooseVault)],
+                } + [
+                    PaletteItem(id: "daily-note", title: "Open Daily Note") { store.openDailyNote() },
+                    PaletteItem(id: "open-vault", title: "Open Vault…", perform: chooseVault),
+                ],
                 actionLabel: "Run Action",
                 dismiss: closePalette
             )

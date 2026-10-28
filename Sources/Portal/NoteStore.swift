@@ -185,6 +185,28 @@ final class NoteStore {
         UserDefaults.standard.set(id.path, forKey: Self.lastNoteKey)
     }
 
+    /// Opens today's daily note, creating it from the daily note template like Obsidian's Daily Notes plugin.
+    func openDailyNote(on date: Date = .now) {
+        guard let vault else { return }
+        let settings = Obsidian.dailyNoteSettings(in: vault)
+        let name = Obsidian.format(date, settings.format)
+        let url = vault.appending(path: settings.folder, directoryHint: .isDirectory)
+            .appending(path: name + ".md").standardizedFileURL
+        if !FileManager.default.fileExists(atPath: url.path) {
+            let template = settings.template.flatMap { path in
+                let file = vault.appending(path: path.hasSuffix(".md") ? path : path + ".md")
+                return try? String(contentsOf: file, encoding: .utf8)
+            }
+            let text = Obsidian.fillTemplate(template ?? "", title: name, date: date, dateFormat: settings.format)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard (try? text.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
+        }
+        if !notes.contains(where: { $0.id == url }) {
+            notes.insert(Note(url: url, modified: .now), at: 0)
+        }
+        select(url)
+    }
+
     // MARK: Images
 
     /// File an image embed points to: `![](path)` relative to the note or the vault,
@@ -297,6 +319,73 @@ enum Obsidian {
     private static func settings(in vault: URL) -> AppSettings? {
         (try? Data(contentsOf: vault.appending(path: ".obsidian/app.json")))
             .flatMap { try? JSONDecoder().decode(AppSettings.self, from: $0) }
+    }
+
+    struct DailyNoteSettings {
+        var folder = ""
+        /// Moment.js date format used for the file name.
+        var format = "YYYY-MM-DD"
+        /// Vault path of the template, without `.md`.
+        var template: String?
+    }
+
+    private struct DailyNotesConfig: Decodable {
+        let folder: String?
+        let format: String?
+        let template: String?
+    }
+
+    /// Settings of Obsidian's Daily Notes plugin, with its defaults for anything not set.
+    static func dailyNoteSettings(in vault: URL) -> DailyNoteSettings {
+        let config = (try? Data(contentsOf: vault.appending(path: ".obsidian/daily-notes.json")))
+            .flatMap { try? JSONDecoder().decode(DailyNotesConfig.self, from: $0) }
+        var settings = DailyNoteSettings()
+        if let folder = config?.folder { settings.folder = folder }
+        if let format = config?.format, !format.isEmpty { settings.format = format }
+        if let template = config?.template, !template.isEmpty { settings.template = template }
+        return settings
+    }
+
+    /// Fills Obsidian template variables: `{{title}}`, `{{date}}`, `{{time}}`, `{{yesterday}}`,
+    /// `{{tomorrow}}`, each optionally with a format like `{{date:dddd}}`.
+    static func fillTemplate(_ template: String, title: String, date: Date, dateFormat: String) -> String {
+        template.replacing(/\{\{\s*(title|date|time|yesterday|tomorrow)\s*(?::([^}]*))?\}\}/) { match in
+            let format = match.2.map { String($0).trimmingCharacters(in: .whitespaces) }
+            let day: TimeInterval = 24 * 60 * 60
+            return switch match.1 {
+            case "title": title
+            case "time": Self.format(date, format ?? "HH:mm")
+            case "yesterday": Self.format(date.addingTimeInterval(-day), format ?? dateFormat)
+            case "tomorrow": Self.format(date.addingTimeInterval(day), format ?? dateFormat)
+            default: Self.format(date, format ?? dateFormat)
+            }
+        }
+    }
+
+    /// Formats `date` with a Moment.js format string, as Obsidian does (common tokens only).
+    static func format(_ date: Date, _ moment: String) -> String {
+        let tokens: [String: String] = [
+            "YYYY": "yyyy", "YY": "yy", "MMMM": "MMMM", "MMM": "MMM", "MM": "MM", "M": "M",
+            "DD": "dd", "D": "d", "dddd": "EEEE", "ddd": "EEE", "HH": "HH", "H": "H",
+            "hh": "hh", "h": "h", "mm": "mm", "m": "m", "ss": "ss", "s": "s", "A": "a", "a": "a",
+        ]
+        var pattern = ""
+        for match in moment.matches(of: /\[[^\]]*\]|YYYY|YY|MMMM|MMM|MM|M|DD|D|dddd|ddd|HH|H|hh|h|mm|m|ss|s|A|a|./) {
+            let token = String(match.output)
+            if token.hasPrefix("[") {
+                pattern += "'" + token.dropFirst().dropLast().replacing("'", with: "''") + "'"
+            } else if let mapped = tokens[token] {
+                pattern += mapped
+            } else if token.first?.isLetter == true {
+                pattern += "'" + token + "'"
+            } else {
+                pattern += token == "'" ? "''" : token
+            }
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
     }
 
     /// The vault Obsidian has open, or the one it opened most recently.
