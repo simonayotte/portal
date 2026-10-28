@@ -217,7 +217,7 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
             let bounds = boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: origin.x, dy: origin.y)
             let colors: [NSColor] = done ? [.white, .controlAccentColor] : [.tertiaryLabelColor]
-            let configuration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+            let configuration = NSImage.SymbolConfiguration(pointSize: MarkdownStyler.baseFontSize, weight: .regular)
                 .applying(NSImage.SymbolConfiguration(paletteColors: colors))
             guard let image = NSImage(systemSymbolName: done ? "checkmark.square.fill" : "square", accessibilityDescription: nil)?
                 .withSymbolConfiguration(configuration) else { return }
@@ -236,7 +236,7 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         guard let storage = textStorage else { return nil }
         func font(at index: Int) -> NSFont {
             let font = index >= 0 && index < storage.length ? storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont : nil
-            return font ?? .systemFont(ofSize: 14)
+            return font ?? .systemFont(ofSize: MarkdownStyler.baseFontSize)
         }
         func emptyWidth(_ font: NSFont) -> CGFloat {
             ("n" as NSString).size(withAttributes: [.font: font]).width

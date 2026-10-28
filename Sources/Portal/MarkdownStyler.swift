@@ -40,8 +40,9 @@ final class ImageEmbed: NSObject {
 /// Styles Markdown source in place so the editor reads like rendered text.
 @MainActor
 enum MarkdownStyler {
-    static let baseFont = NSFont.systemFont(ofSize: 14)
-    static let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    nonisolated static let baseFontSize: CGFloat = 16
+    static let baseFont = NSFont.systemFont(ofSize: baseFontSize)
+    static let monoFont = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
     static let tabWidth: CGFloat = 24
 
     static var baseAttributes: [NSAttributedString.Key: Any] {
@@ -103,7 +104,7 @@ enum MarkdownStyler {
 
         for m in matches(heading) {
             let level = m.range(at: 1).length - 1
-            let size: CGFloat = [26, 21, 18, 16, 15, 14][min(level, 6) - 1]
+            let size: CGFloat = [28, 23, 20, 18, 17, 16][min(level, 6) - 1]
             storage.addAttributes([
                 .font: NSFont.systemFont(ofSize: size, weight: .bold),
                 .paragraphStyle: paragraphStyle {
