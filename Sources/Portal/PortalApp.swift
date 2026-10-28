@@ -1,11 +1,11 @@
 import SwiftUI
 
 @main
-struct FloatnoteApp: App {
+struct PortalApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 
     var body: some Scene {
-        Window("Floatnote", id: "note") {
+        Window("Portal", id: "note") {
             ContentView(store: appDelegate.store)
         }
         .windowLevel(.floating)

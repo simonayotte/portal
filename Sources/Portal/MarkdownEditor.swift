@@ -5,6 +5,7 @@ import SwiftUI
 struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var vimMode: VimMode
+    let controller: EditorController
 
     static let inset = NSSize(width: 18, height: 14)
 
@@ -13,6 +14,7 @@ struct MarkdownEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let textView = MarkdownTextView.make()
         textView.delegate = context.coordinator
+        controller.textView = textView
         textView.vim.onModeChange = { [vimMode = $vimMode] mode in
             Task { @MainActor in vimMode.wrappedValue = mode }
         }
@@ -80,6 +82,9 @@ final class MarkdownTextView: NSTextView {
 
     private static let listPrefix = try! NSRegularExpression(
         pattern: #"^([ \t]*)(?:([-*+])[ \t]+(\[[ xX]\][ \t]+)?|(\d+)([.)])[ \t]+|(>)[ \t]?)"#
+    )
+    private static let blockPrefix = try! NSRegularExpression(
+        pattern: #"^([ \t]*)(#{1,6}[ \t]+|[-*+][ \t]+\[[ xX]\][ \t]+|[-*+][ \t]+|\d+[.)][ \t]+|>[ \t]?)?"#
     )
 
     static func make() -> MarkdownTextView {
@@ -213,11 +218,16 @@ final class MarkdownTextView: NSTextView {
         return true
     }
 
+    /// The range formatting applies to: in Vim Normal mode that is the caret, not the block cursor.
+    private var editingSelection: NSRange {
+        vim.mode == .normal ? NSRange(location: selectedRange().location, length: 0) : selectedRange()
+    }
+
     /// Turns the current line into a task, or checks / unchecks it when it already is one.
     func toggleTask() {
         let (line, prefix) = currentLine()
         let text = string as NSString
-        let caret = selectedRange()
+        let caret = editingSelection
         func insert(_ marker: String, at location: Int) {
             let shift = caret.location >= location ? (marker as NSString).length : 0
             replace(NSRange(location: location, length: 0), with: marker, select: NSRange(location: caret.location + shift, length: caret.length))
@@ -232,20 +242,63 @@ final class MarkdownTextView: NSTextView {
             let indent = text.substring(with: line).prefix { $0 == " " || $0 == "\t" }.utf16.count
             insert("- [ ] ", at: line.location + indent)
         }
+        vim.didEdit(typing: false)
+    }
+
+    /// Gives the current line a block prefix (`# `, `- `, `> ` …) in place of any other, or removes it if it already has it.
+    func setLinePrefix(_ prefix: String) {
+        let (line, _) = currentLine()
+        let caret = editingSelection
+        guard let match = Self.blockPrefix.firstMatch(in: string, range: line) else { return }
+        let existing = match.range(at: 2)
+        let target = existing.location == NSNotFound ? NSRange(location: NSMaxRange(match.range(at: 1)), length: 0) : existing
+        let replacement = (string as NSString).substring(with: target) == prefix ? "" : prefix
+        let length = (replacement as NSString).length
+        let location = if caret.location < target.location {
+            caret.location
+        } else if caret.location >= NSMaxRange(target) {
+            caret.location + length - target.length
+        } else {
+            target.location + length
+        }
+        replace(target, with: replacement, select: NSRange(location: location, length: 0))
+        vim.didEdit(typing: false)
     }
 
     /// Wraps the selection as link text and puts the caret in the URL, or inserts an empty link.
     func insertLink() {
-        let selection = selectedRange()
+        let selection = editingSelection
         let selected = (string as NSString).substring(with: selection)
         let caret = selected.isEmpty ? selection.location + 1 : NSMaxRange(selection) + 3
         replace(selection, with: "[\(selected)]()", select: NSRange(location: caret, length: 0))
+        vim.didEdit(typing: true)
+    }
+
+    /// Fences the selection as a code block, starting it on its own line.
+    func insertCodeBlock() {
+        let selection = editingSelection
+        let selected = (string as NSString).substring(with: selection)
+        let lead = selection.location > currentLine().range.location ? "\n" : ""
+        let start = selection.location + (lead as NSString).length + 4
+        replace(selection, with: lead + "```\n" + selected + "\n```", select: NSRange(location: start, length: (selected as NSString).length))
+        vim.didEdit(typing: selected.isEmpty)
+    }
+
+    /// Adds a `---` divider below the current line.
+    func insertDivider() {
+        let line = currentLine().range
+        if line.length == 0 {
+            replace(line, with: "---\n")
+        } else {
+            replace(NSRange(location: NSMaxRange(line), length: 0), with: "\n---\n")
+        }
+        vim.didEdit(typing: false)
     }
 
     /// Wraps the selection in `marker`, or unwraps it when it is already wrapped.
     func toggleWrap(_ marker: String) {
         let text = string as NSString
-        let selection = selectedRange()
+        let selection = editingSelection
         let length = (marker as NSString).length
         let before = NSRange(location: selection.location - length, length: length)
         let after = NSRange(location: NSMaxRange(selection), length: length)
@@ -258,8 +311,10 @@ final class MarkdownTextView: NSTextView {
                 with: selected,
                 select: NSRange(location: before.location, length: selection.length)
             )
+            vim.didEdit(typing: false)
         } else {
             replace(selection, with: marker + selected + marker, select: NSRange(location: selection.location + length, length: selection.length))
+            vim.didEdit(typing: selection.length == 0)
         }
     }
 }

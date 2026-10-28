@@ -24,14 +24,20 @@ private enum ToolbarAction: String, CaseIterable, Identifiable {
     }
 }
 
+private enum Palette {
+    case actions, notes
+}
+
 struct ContentView: View {
     @Bindable var store: NoteStore
     @State private var tooltip: ToolbarAction?
     @State private var hoverTask: Task<Void, Never>?
     @State private var vimMode = VimMode.normal
+    @State private var palette: Palette?
+    @State private var editor = EditorController()
 
     var body: some View {
-        MarkdownEditor(text: $store.text, vimMode: $vimMode)
+        MarkdownEditor(text: $store.text, vimMode: $vimMode, controller: editor)
             .overlay(alignment: .topLeading) {
                 if store.text.isEmpty {
                     Text("Start writing...")
@@ -55,6 +61,20 @@ struct ContentView: View {
                 VimModePill(mode: vimMode)
                     .padding(12)
                     .allowsHitTesting(false)
+            }
+            .overlay(alignment: .top) {
+                if let palette {
+                    ZStack(alignment: .top) {
+                        Color.clear
+                            .contentShape(.rect)
+                            .onTapGesture(perform: closePalette)
+                        paletteView(palette)
+                            .id(palette)
+                            .containerRelativeFrame(.horizontal) { width, _ in min(width * 0.7, 320) }
+                            .padding(.top, 8)
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                }
             }
             .frame(minWidth: 280, minHeight: 220)
             .containerBackground(.thickMaterial, for: .window)
@@ -81,8 +101,46 @@ struct ContentView: View {
     private func perform(_ action: ToolbarAction) {
         hover(action, isHovering: false)
         switch action {
-        case .actionPanel, .browseNotes: break
+        case .actionPanel: togglePalette(.actions)
+        case .browseNotes: togglePalette(.notes)
         case .createNote: store.create()
+        }
+    }
+
+    private func togglePalette(_ target: Palette) {
+        if palette == target { return closePalette() }
+        withAnimation(.snappy(duration: 0.18)) { palette = target }
+    }
+
+    private func closePalette() {
+        withAnimation(.snappy(duration: 0.15)) { palette = nil }
+        editor.focus()
+    }
+
+    private func paletteView(_ palette: Palette) -> CommandPalette {
+        switch palette {
+        case .actions:
+            CommandPalette(
+                prompt: "Search actions...",
+                items: MarkdownAction.all.map { action in
+                    PaletteItem(id: action.id, title: action.title, shortcut: action.shortcut) { editor.perform(action) }
+                },
+                actionLabel: "Run Action",
+                dismiss: closePalette
+            )
+        case .notes:
+            CommandPalette(
+                prompt: "Search notes...",
+                items: store.notes.sorted { $0.modified > $1.modified }.map { note in
+                    PaletteItem(
+                        id: note.id.absoluteString,
+                        title: note.title,
+                        detail: note.modified.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+                    ) { store.select(note.id) }
+                },
+                actionLabel: "Open Note",
+                dismiss: closePalette
+            )
         }
     }
 
@@ -109,13 +167,8 @@ private struct Tooltip: View {
             Text(action.rawValue)
                 .font(.callout.weight(.medium))
             HStack(spacing: 3) {
-                ForEach(["⌘", action.key.uppercased()], id: \.self) { key in
-                    Text(key)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 18, minHeight: 18)
-                        .background(.fill.secondary, in: .rect(cornerRadius: 5))
-                }
+                KeyCap("⌘")
+                KeyCap(action.key.uppercased())
             }
         }
         .padding(.leading, 12)

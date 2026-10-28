@@ -15,14 +15,14 @@ struct Note: Identifiable, Hashable {
     }
 }
 
-/// Notes are plain `.md` files in ~/Library/Application Support/Floatnote.
+/// Notes are plain `.md` files in ~/Library/Application Support/Portal.
 @MainActor @Observable
 final class NoteStore {
     private(set) var notes: [Note] = []
     private(set) var selectedID: URL?
 
     @ObservationIgnored private let directory = URL.applicationSupportDirectory
-        .appending(path: "Floatnote", directoryHint: .isDirectory)
+        .appending(path: "Portal", directoryHint: .isDirectory)
     @ObservationIgnored private var pending: Note?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 

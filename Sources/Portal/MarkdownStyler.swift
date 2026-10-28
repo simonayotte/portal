@@ -2,15 +2,15 @@ import AppKit
 
 extension NSAttributedString.Key {
     /// Markdown syntax that is hidden unless the caret is on its line.
-    static let markdownMarker = NSAttributedString.Key("FloatnoteMarkdownMarker")
+    static let markdownMarker = NSAttributedString.Key("PortalMarkdownMarker")
     /// List marker (`-`, `*`, `+`) drawn as a bullet.
-    static let markdownBullet = NSAttributedString.Key("FloatnoteMarkdownBullet")
+    static let markdownBullet = NSAttributedString.Key("PortalMarkdownBullet")
     /// `[ ]` / `[x]` drawn as a checkbox; the value is whether it is checked.
-    static let markdownCheckbox = NSAttributedString.Key("FloatnoteMarkdownCheckbox")
+    static let markdownCheckbox = NSAttributedString.Key("PortalMarkdownCheckbox")
     /// Inline code drawn with a rounded background.
-    static let markdownInlineCode = NSAttributedString.Key("FloatnoteMarkdownInlineCode")
+    static let markdownInlineCode = NSAttributedString.Key("PortalMarkdownInlineCode")
     /// Block decoration drawn behind the text.
-    static let markdownBlock = NSAttributedString.Key("FloatnoteMarkdownBlock")
+    static let markdownBlock = NSAttributedString.Key("PortalMarkdownBlock")
 }
 
 enum MarkdownBlock: String {

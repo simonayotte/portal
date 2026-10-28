@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "Floatnote",
+    name: "Portal",
     platforms: [.macOS(.v27)],
     targets: [
-        .executableTarget(name: "Floatnote")
+        .executableTarget(name: "Portal")
     ]
 )

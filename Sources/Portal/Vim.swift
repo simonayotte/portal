@@ -102,6 +102,22 @@ final class VimEngine {
         sync()
     }
 
+    /// Picks the mode after a formatting edit made outside Vim's own keys (⌘B, Action Panel …):
+    /// a selection stays selected, and an empty placeholder like `****` is ready for typing.
+    func didEdit(typing: Bool) {
+        guard mode != .insert else { return }
+        let selection = view.selectedRange()
+        if selection.length > 0 {
+            anchor = selection.location
+            cursor = NSMaxRange(selection) - 1
+            mode = .visual
+        } else {
+            cursor = selection.location
+            mode = typing ? .insert : .normal
+        }
+        sync()
+    }
+
     private func leaveInsert() {
         view.breakUndoCoalescing()
         let buffer = buffer
