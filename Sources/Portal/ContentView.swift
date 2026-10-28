@@ -58,8 +58,8 @@ struct ContentView: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                VimModePill(mode: vimMode)
-                    .padding(12)
+                VimModeLabel(mode: vimMode)
+                    .padding(14)
                     .allowsHitTesting(false)
             }
             .overlay(alignment: .top) {
@@ -87,13 +87,21 @@ struct ContentView: View {
                         .lineLimit(1)
                 }
                 .sharedBackgroundVisibility(.hidden)
-                ToolbarItemGroup(placement: .primaryAction) {
-                    ForEach(ToolbarAction.allCases) { action in
-                        Button(action.rawValue, systemImage: action.symbol) { perform(action) }
-                            .keyboardShortcut(KeyEquivalent(action.key))
-                            .onHover { hover(action, isHovering: $0) }
+                ToolbarItem(placement: .primaryAction) {
+                    HStack(spacing: 2) {
+                        ForEach(ToolbarAction.allCases) { action in
+                        Button { perform(action) } label: {
+                            Image(systemName: action.symbol)
+                                .font(.system(size: 16))
+                        }
+                        .buttonStyle(ToolbarIconButtonStyle())
+                        .accessibilityLabel(action.rawValue)
+                        .keyboardShortcut(KeyEquivalent(action.key))
+                        .onHover { hover(action, isHovering: $0) }
+                        }
                     }
                 }
+                .sharedBackgroundVisibility(.hidden)
             }
             .background(FloatingWindowConfigurator())
     }
@@ -159,6 +167,35 @@ struct ContentView: View {
     }
 }
 
+/// Plain toolbar icon with a soft rounded highlight on hover and press.
+private struct ToolbarIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        IconButton(configuration: configuration)
+    }
+
+    private struct IconButton: View {
+        let configuration: Configuration
+        @State private var isHovered = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(isHovered ? .primary : .secondary)
+                .frame(width: 28, height: 28)
+                .background(highlight, in: .rect(cornerRadius: 7))
+                .contentShape(.rect)
+                .onHover { isHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: isHovered)
+                .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+        }
+
+        private var highlight: AnyShapeStyle {
+            if configuration.isPressed { AnyShapeStyle(.fill.secondary) }
+            else if isHovered { AnyShapeStyle(.fill.tertiary) }
+            else { AnyShapeStyle(.clear) }
+        }
+    }
+}
+
 private struct Tooltip: View {
     let action: ToolbarAction
 
@@ -179,7 +216,7 @@ private struct Tooltip: View {
     }
 }
 
-private struct VimModePill: View {
+private struct VimModeLabel: View {
     let mode: VimMode
 
     var body: some View {
@@ -187,9 +224,6 @@ private struct VimModePill: View {
             .font(.caption.weight(.semibold).monospaced())
             .foregroundStyle(.secondary)
             .contentTransition(.interpolate)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .glassEffect(.regular, in: .capsule)
             .animation(.snappy(duration: 0.2), value: mode)
     }
 }
