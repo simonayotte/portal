@@ -142,7 +142,13 @@ final class MarkdownTextView: NSTextView {
     /// Reveals syntax on the line(s) holding the selection and hides it everywhere else.
     func updateActiveLine() {
         guard let layoutManager = markdownLayoutManager else { return }
-        let line = (string as NSString).paragraphRange(for: selectedRange())
+        var line = (string as NSString).paragraphRange(for: selectedRange())
+        // A rendered block (a diagram) shows its source while the caret is anywhere in it.
+        for index in [line.location, NSMaxRange(line) - 1] where index >= 0 && index < (textStorage?.length ?? 0) {
+            if let block = textStorage?.attribute(.markdownRendered, at: index, effectiveRange: nil) as? RenderedBlock {
+                line = NSUnionRange(line, (string as NSString).paragraphRange(for: block.range))
+            }
+        }
         let previous = layoutManager.activeLine
         guard line != previous else { return }
         layoutManager.activeLine = line

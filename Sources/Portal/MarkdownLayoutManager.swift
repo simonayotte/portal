@@ -39,6 +39,9 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         if let embed = storage.attribute(.markdownImage, at: index, effectiveRange: nil) as? ImageEmbed {
             return image(for: embed) != nil
         }
+        if let block = storage.attribute(.markdownRendered, at: index, effectiveRange: nil) as? RenderedBlock {
+            return image(for: block) != nil
+        }
         return true
     }
 
@@ -61,10 +64,23 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         return image
     }
 
+    /// The block's image once rendered for the current appearance; starts rendering it the first time.
+    private func image(for block: RenderedBlock) -> NSImage? {
+        guard let textView = firstTextView else { return nil }
+        return MainActor.assumeIsolated {
+            let dark = textView.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return BlockRenderer.shared.image(for: block, dark: dark) { [weak textView] in
+                guard let layoutManager = textView?.layoutManager, let length = textView?.textStorage?.length else { return }
+                layoutManager.invalidateGlyphs(forCharacterRange: NSRange(location: 0, length: length), changeInLength: 0, actualCharacterRange: nil)
+                layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: length), actualCharacterRange: nil)
+            }
+        }
+    }
+
     /// Fits the image to the text width (or the embed's `|width`) without upscaling, capped in height.
-    private func size(of image: NSImage, for embed: ImageEmbed, in container: NSTextContainer) -> NSSize {
+    private func size(of image: NSImage, for embed: ImageEmbed? = nil, in container: NSTextContainer) -> NSSize {
         let available = container.size.width - container.lineFragmentPadding * 2
-        var width = min(embed.width ?? image.size.width, image.size.width, available)
+        var width = min(embed?.width ?? image.size.width, image.size.width, available)
         var height = image.size.height * width / image.size.width
         if height > Self.maxImageHeight {
             width *= Self.maxImageHeight / height
@@ -119,7 +135,8 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     }
 
     /// Makes room for embedded images below their line, and collapses empty front matter
-    /// unless the caret is on it.
+    /// unless the caret is on it. A rendered block's image goes below its last line, the others
+    /// collapsing unless the caret is in the block.
     func layoutManager(
         _ layoutManager: NSLayoutManager,
         shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
@@ -138,6 +155,17 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             let lineHeight = isActive(index) ? lineFragmentRect.pointee.height : 0
             lineFragmentRect.pointee.size.height = lineHeight + height
             lineFragmentUsedRect.pointee.size.height = lineHeight + height
+            return true
+        }
+
+        if let block = storage.attribute(.markdownRendered, at: index, effectiveRange: nil) as? RenderedBlock,
+           let image = image(for: block) {
+            let lastIndex = characterIndexForGlyph(at: NSMaxRange(glyphRange) - 1)
+            let height = NSMaxRange(block.range) - 1 <= lastIndex ? size(of: image, in: textContainer).height + Self.imageSpacing : 0
+            let lineHeight = isActive(index) ? lineFragmentRect.pointee.height : 0
+            lineFragmentRect.pointee.size.height = lineHeight + height
+            lineFragmentUsedRect.pointee.size.height = lineHeight + height
+            if lineHeight == 0 { baselineOffset.pointee = 0 }
             return true
         }
 
@@ -162,8 +190,15 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             let rect = lineFragmentsRect(for: range).offsetBy(dx: 0, dy: origin.y)
             switch block {
             case .code:
+                var height = rect.height
+                // A rendered block's source only shows, on its background, while the caret is in it.
+                if let rendered = storage.attribute(.markdownRendered, at: range.location, effectiveRange: nil) as? RenderedBlock,
+                   let image = image(for: rendered) {
+                    guard isActive(range.location) else { return }
+                    height -= size(of: image, in: container).height + Self.imageSpacing
+                }
                 NSColor.quaternarySystemFill.setFill()
-                NSBezierPath(roundedRect: NSRect(x: left, y: rect.minY, width: width, height: rect.height), xRadius: 8, yRadius: 8).fill()
+                NSBezierPath(roundedRect: NSRect(x: left, y: rect.minY, width: width, height: height), xRadius: 8, yRadius: 8).fill()
             case .quote:
                 NSColor.controlAccentColor.withAlphaComponent(0.7).setFill()
                 NSBezierPath(roundedRect: NSRect(x: left, y: rect.minY + 2, width: 3, height: rect.height - 4), xRadius: 1.5, yRadius: 1.5).fill()
@@ -207,6 +242,19 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).addClip()
             image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             NSGraphicsContext.restoreGraphicsState()
+        }
+
+        storage.enumerateAttribute(.markdownRendered, in: characters) { value, _, _ in
+            guard let block = value as? RenderedBlock, let image = image(for: block) else { return }
+            let fragment = lineFragmentRect(forGlyphAt: glyphIndexForCharacter(at: NSMaxRange(block.range) - 1), effectiveRange: nil)
+            let size = size(of: image, in: container)
+            let rect = NSRect(
+                x: left + (width - size.width) / 2,
+                y: origin.y + fragment.maxY - size.height - Self.imageSpacing / 2,
+                width: size.width,
+                height: size.height
+            )
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         }
 
         if let blockCursor, let rect = blockCursorRect(at: blockCursor, in: container) {

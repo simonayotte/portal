@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="mermaid.min.js"></script>
+<style>
+  html, body { margin: 0; background: transparent; font: 16px -apple-system, sans-serif; }
+  #output { display: inline-block; padding: 4px; }
+</style>
+</head>
+<body>
+<div id="output"></div>
+<script>
+  let count = 0
+
+  // Renders a block into #output and returns its size, or null when the source does not parse.
+  async function render(kind, source, dark) {
+    const output = document.getElementById("output")
+    try {
+      mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, theme: dark ? "dark" : "default" })
+      output.innerHTML = (await mermaid.render(`diagram${count++}`, source)).svg
+      // Natural size instead of the container's width.
+      const svg = output.querySelector("svg"), box = svg.viewBox.baseVal
+      svg.setAttribute("width", box.width)
+      svg.setAttribute("height", box.height)
+      svg.style.maxWidth = "none"
+    } catch {
+      output.innerHTML = ""
+      return null
+    }
+    const rect = output.getBoundingClientRect()
+    return { width: Math.ceil(rect.width), height: Math.ceil(rect.height) }
+  }
+</script>
+</body>
+</html>

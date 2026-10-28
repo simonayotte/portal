@@ -17,6 +17,8 @@ extension NSAttributedString.Key {
     static let markdownBlock = NSAttributedString.Key("PortalMarkdownBlock")
     /// Hidden syntax that advances to the next tab stop instead (table pipes).
     static let markdownTab = NSAttributedString.Key("PortalMarkdownTab")
+    /// A block shown as an image unless the caret is in it; the value is a `RenderedBlock`.
+    static let markdownRendered = NSAttributedString.Key("PortalMarkdownRendered")
     /// A table row drawn in a grid; the value is a `TableRow`.
     static let markdownTableRow = NSAttributedString.Key("PortalMarkdownTableRow")
 }
@@ -39,6 +41,24 @@ final class ImageEmbed: NSObject {
     }
 
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp", "svg"]
+}
+
+/// A block drawn from its source, like a Mermaid diagram.
+final class RenderedBlock: NSObject, Sendable {
+    enum Kind: String {
+        case mermaid
+    }
+
+    let kind: Kind
+    let source: String
+    /// The block's characters, so its lines can make way for the image.
+    let range: NSRange
+
+    init(kind: Kind, source: String, range: NSRange) {
+        self.kind = kind
+        self.source = source
+        self.range = range
+    }
 }
 
 /// A table row's grid: column edges from the left of the text, and whether it is the header.
@@ -257,6 +277,10 @@ enum MarkdownStyler {
             let language = string.substring(with: m.range(at: 1)).dropFirst(3).split(separator: " ").first.map(String.init) ?? ""
             for token in SyntaxHighlighter.tokens(in: string.substring(with: code), language: language.lowercased()) {
                 storage.addAttribute(.foregroundColor, value: token.color, range: NSRange(location: code.location + token.range.location, length: token.range.length))
+            }
+            if let kind = RenderedBlock.Kind(rawValue: language.lowercased()) {
+                hide(m.range, color: .labelColor)
+                storage.addAttribute(.markdownRendered, value: RenderedBlock(kind: kind, source: string.substring(with: code), range: m.range), range: m.range)
             }
             for fence in [m.range(at: 1), m.range(at: 3)] {
                 storage.addAttributes([
