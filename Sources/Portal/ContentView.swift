@@ -50,6 +50,8 @@ struct ContentView: View {
                 .fill(.ultraThinMaterial)
                 .overlay(Color(nsColor: .textBackgroundColor).opacity(0.5))
         }
+        .windowMinimizeBehavior(.disabled)
+        .windowFullScreenBehavior(.disabled)
         .toolbar(removing: .title)
         .toolbar { toolbarContent }
         .background(FloatingWindowConfigurator())
@@ -267,7 +269,10 @@ private struct FloatingWindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
-            view.window?.collectionBehavior.formUnion([.canJoinAllSpaces, .fullScreenAuxiliary])
+            guard let window = view.window else { return }
+            window.collectionBehavior.formUnion([.canJoinAllSpaces, .fullScreenAuxiliary])
+            // A floating pane neither zooms nor goes full screen; only the close button stays active.
+            window.standardWindowButton(.zoomButton)?.isEnabled = false
         }
         return view
     }
