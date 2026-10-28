@@ -217,12 +217,13 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
             let bounds = boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: origin.x, dy: origin.y)
             let colors: [NSColor] = done ? [.white, .controlAccentColor] : [.tertiaryLabelColor]
-            let configuration = NSImage.SymbolConfiguration(pointSize: MarkdownStyler.baseFontSize, weight: .regular)
+            let configuration = NSImage.SymbolConfiguration(pointSize: MarkdownStyler.checkboxSize, weight: .regular)
                 .applying(NSImage.SymbolConfiguration(paletteColors: colors))
             guard let image = NSImage(systemSymbolName: done ? "checkmark.square.fill" : "square", accessibilityDescription: nil)?
                 .withSymbolConfiguration(configuration) else { return }
+            // Left-aligned, since `[x]` and `[ ]` differ in width; centered on the line vertically.
             let rect = NSRect(
-                x: bounds.midX - image.size.width / 2,
+                x: bounds.minX,
                 y: bounds.midY - image.size.height / 2,
                 width: image.size.width,
                 height: image.size.height

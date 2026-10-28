@@ -41,6 +41,9 @@ final class ImageEmbed: NSObject {
 @MainActor
 enum MarkdownStyler {
     nonisolated static let baseFontSize: CGFloat = 16
+    /// Task checkboxes are drawn a bit larger than the text, with extra room after `[ ]` to fit.
+    nonisolated static let checkboxSize: CGFloat = 20
+    private static let checkboxExtraWidth: CGFloat = 6
     static let baseFont = NSFont.systemFont(ofSize: baseFontSize)
     static let monoFont = NSFont.monospacedSystemFont(ofSize: 15, weight: .regular)
     static let tabWidth: CGFloat = 24
@@ -140,12 +143,20 @@ enum MarkdownStyler {
             let alias = m.range(at: 3)
             // `[[target|alias]]` shows only the alias.
             let shown = alias.location == NSNotFound ? m.range(at: 2) : NSRange(location: alias.location + 1, length: alias.length - 1)
-            storage.addAttributes([.link: link, .foregroundColor: NSColor.controlAccentColor], range: shown)
+            storage.addAttributes([
+                .link: link,
+                .foregroundColor: NSColor.controlAccentColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ], range: shown)
             hide(NSRange(location: m.range.location, length: shown.location - m.range.location), m.range(at: 4), color: .secondaryLabelColor)
         }
         for m in matches(link) {
             if let url = URL(string: string.substring(with: m.range(at: 4))) {
-                storage.addAttributes([.link: url, .foregroundColor: NSColor.controlAccentColor], range: m.range(at: 2))
+                storage.addAttributes([
+                    .link: url,
+                    .foregroundColor: NSColor.controlAccentColor,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                ], range: m.range(at: 2))
             }
             hide(m.range(at: 1), m.range(at: 3), color: .secondaryLabelColor)
         }
@@ -180,18 +191,21 @@ enum MarkdownStyler {
                     .foregroundColor: NSColor.clear,
                     .link: URL(string: "task:\(checkbox.location)")!,
                 ], range: checkbox)
+                // Pad every box to the width of `[x]` plus the extra room, so task text lines up checked or not.
+                let padding = checkboxExtraWidth + width("[x]") - width(string.substring(with: checkbox))
+                storage.addAttribute(.kern, value: padding, range: NSRange(location: checkbox.location + 2, length: 1))
                 if done {
                     storage.addAttributes([
                         .strikethroughStyle: NSUnderlineStyle.single.rawValue,
                         .foregroundColor: NSColor.secondaryLabelColor,
                     ], range: m.range(at: 5))
                 }
-                visiblePrefix = indent + string.substring(with: box)
+                visiblePrefix = indent + "[x] "
             } else {
                 storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: marker)
                 if isBullet { storage.addAttribute(.markdownBullet, value: true, range: marker) }
             }
-            let hangingIndent = width(visiblePrefix)
+            let hangingIndent = width(visiblePrefix) + (box.location != NSNotFound && isBullet ? checkboxExtraWidth : 0)
             storage.addAttribute(.paragraphStyle, value: paragraphStyle { $0.headIndent = hangingIndent }, range: m.range)
         }
         for m in matches(quote) {
