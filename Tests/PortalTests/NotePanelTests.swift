@@ -65,9 +65,10 @@ import Testing
 }
 
 @MainActor
-@Test func windowBackgroundBlursBehindTheWindowWithoutActivation() throws {
+@Test(arguments: [ColorScheme.light, .dark])
+func noteBackgroundBlursBehindTheWindowWithoutActivation(_ colorScheme: ColorScheme) throws {
     _ = NSApplication.shared
-    let panel = NotePanel(rootView: WindowBackground())
+    let panel = NotePanel(rootView: NoteBackground().environment(\.colorScheme, colorScheme))
     defer { panel.close() }
     let content = try #require(panel.contentView)
     content.layoutSubtreeIfNeeded()

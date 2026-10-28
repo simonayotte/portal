@@ -30,7 +30,6 @@ private enum Palette {
 
 struct ContentView: View {
     @Bindable var store: NoteStore
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.appearsActive) private var appearsActive
     @State private var tooltip: ToolbarAction?
     @State private var hoverTask: Task<Void, Never>?
@@ -47,11 +46,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 280, minHeight: 220)
         .background {
-            WindowBackground()
-                .overlay(
-                    colorScheme == .dark ? Color.black.opacity(0.2) : Color.white.opacity(0.35)
-                )
-                .ignoresSafeArea()
+            NoteBackground().ignoresSafeArea()
         }
         .windowMinimizeBehavior(.disabled)
         .windowFullScreenBehavior(.disabled)

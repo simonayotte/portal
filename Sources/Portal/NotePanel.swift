@@ -51,6 +51,19 @@ final class NotePanel: NSPanel {
     }
 }
 
+/// Shared surface for the editor and its command palettes.
+struct NoteBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        WindowBackground()
+            .overlay(Color(nsColor: .windowBackgroundColor).opacity(0.15))
+            .overlay(
+                colorScheme == .dark ? Color.black.opacity(0.2) : Color.white.opacity(0.35)
+            )
+    }
+}
+
 /// Native behind-window blur, kept active even while Portal leaves the other app active.
 struct WindowBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {

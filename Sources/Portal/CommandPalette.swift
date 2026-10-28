@@ -38,7 +38,15 @@ struct CommandPalette: View {
             Divider()
             footer
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+        .background {
+            NoteBackground()
+                .clipShape(.rect(cornerRadius: 18))
+                .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+        }
         .onAppear { selection = results.first?.id }
         .onChange(of: query) { selection = results.first?.id }
     }
