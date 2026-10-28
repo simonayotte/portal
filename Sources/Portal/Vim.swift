@@ -4,24 +4,13 @@ enum VimMode {
     case normal, insert, visual, visualLine
 
     var isVisual: Bool { self == .visual || self == .visualLine }
-
-    var label: String {
-        switch self {
-        case .normal: "NORMAL"
-        case .insert: "INSERT"
-        case .visual, .visualLine: "VISUAL"
-        }
-    }
 }
 
 /// Vim keybindings for `MarkdownTextView`: modes, counts, motions, operators and visual selection.
-/// In Normal mode the cursor is shown as a one-character selection (a block caret).
+/// Normal and Visual mode show a block cursor; Insert mode shows the thin caret.
 @MainActor
 final class VimEngine {
-    var onModeChange: ((VimMode) -> Void)?
-    private(set) var mode = VimMode.normal {
-        didSet { if mode != oldValue { onModeChange?(mode) } }
-    }
+    private(set) var mode = VimMode.normal
 
     private unowned let view: MarkdownTextView
     private var keys: [String] = []
@@ -81,7 +70,7 @@ final class VimEngine {
     /// Back to Normal mode at the start of a freshly loaded note.
     func reset() {
         keys = []
-        cursor = 0
+        cursor = MarkdownStyler.bodyStart(of: view.string as NSString)
         mode = .normal
         sync()
     }
@@ -135,8 +124,7 @@ final class VimEngine {
             view.setSelectedRange(NSRange(location: min(cursor, buffer.length), length: 0))
         case .normal:
             cursor = buffer.clamp(cursor)
-            let isOnCharacter = cursor < buffer.length && buffer.char(cursor) != Buffer.newline
-            view.setSelectedRange(NSRange(location: cursor, length: isOnCharacter ? 1 : 0))
+            view.setSelectedRange(NSRange(location: cursor, length: 0))
         case .visual:
             cursor = buffer.clamp(cursor)
             let low = min(anchor, cursor)
@@ -146,6 +134,7 @@ final class VimEngine {
             let start = buffer.start(buffer.line(of: min(anchor, cursor)))
             view.setSelectedRange(NSRange(location: start, length: buffer.end(buffer.line(of: max(anchor, cursor))) - start))
         }
+        view.showBlockCursor(at: mode == .insert ? nil : cursor)
         view.scrollRangeToVisible(NSRange(location: cursor, length: 0))
     }
 

@@ -1,10 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Live-preview Markdown editor: the source is styled in place and syntax markers
 /// are hidden everywhere except the line being edited.
 struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
-    @Binding var vimMode: VimMode
     let controller: EditorController
 
     static let inset = NSSize(width: 18, height: 14)
@@ -15,9 +15,6 @@ struct MarkdownEditor: NSViewRepresentable {
         let textView = MarkdownTextView.make()
         textView.delegate = context.coordinator
         controller.textView = textView
-        textView.vim.onModeChange = { [vimMode = $vimMode] mode in
-            Task { @MainActor in vimMode.wrappedValue = mode }
-        }
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -46,6 +43,7 @@ struct MarkdownEditor: NSViewRepresentable {
 
         func load(_ string: String) {
             guard let textView else { return }
+            (textView.layoutManager as? MarkdownLayoutManager)?.forgetImages()
             textView.string = string
             textView.restyle()
             textView.updateActiveLine()
@@ -85,6 +83,8 @@ struct MarkdownEditor: NSViewRepresentable {
 final class MarkdownTextView: NSTextView {
     lazy var vim = VimEngine(view: self)
     var openLink: ((String) -> Void)?
+    /// Saves pasted image data (with its file extension) to the vault and returns the embed to insert.
+    var saveImage: ((Data, String) -> String?)?
 
     private static let listPrefix = try! NSRegularExpression(
         pattern: #"^([ \t]*)(?:([-*+])[ \t]+(\[[ xX]\][ \t]+)?|(\d+)([.)])[ \t]+|(>)[ \t]?)"#
@@ -123,6 +123,15 @@ final class MarkdownTextView: NSTextView {
     }
 
     private var markdownLayoutManager: MarkdownLayoutManager? { layoutManager as? MarkdownLayoutManager }
+    private lazy var caretColor = insertionPointColor
+
+    /// Draws Vim's block cursor on the character at `index`, or the thin caret when `nil`.
+    func showBlockCursor(at index: Int?) {
+        guard let layoutManager = markdownLayoutManager, layoutManager.blockCursor != index else { return }
+        layoutManager.blockCursor = index
+        insertionPointColor = index == nil ? caretColor : .clear
+        needsDisplay = true
+    }
 
     func restyle() {
         guard let textStorage else { return }
@@ -207,6 +216,50 @@ final class MarkdownTextView: NSTextView {
             with: "",
             select: NSRange(location: max(line.location, caret.location - removed), length: caret.length)
         )
+    }
+
+    // MARK: Pasting images
+
+    /// Lets Paste accept a clipboard holding only an image.
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        super.readablePasteboardTypes + [.png, .tiff]
+    }
+
+    /// Pasting an image (a screenshot, or an image file copied in Finder) saves it to the vault and embeds it.
+    override func paste(_ sender: Any?) {
+        if !pasteImage(from: .general) { super.paste(sender) }
+        vim.didEdit(typing: false)
+    }
+
+    /// Embeds the pasteboard's image on a line of its own (below the cursor's line in Vim Normal mode).
+    /// Returns `false` when it holds no image.
+    func pasteImage(from pasteboard: NSPasteboard) -> Bool {
+        guard let image = Self.pastedImage(from: pasteboard), let embed = saveImage?(image.data, image.fileExtension) else { return false }
+        let line = currentLine().range
+        let target = vim.mode == .normal ? NSRange(location: NSMaxRange(line), length: 0) : editingSelection
+        let lead = target.location > line.location ? "\n" : ""
+        let trail = NSMaxRange(target) < NSMaxRange(line) ? "\n" : ""
+        replace(target, with: lead + embed + trail)
+        return true
+    }
+
+    private static func pastedImage(from pasteboard: NSPasteboard) -> (data: Data, fileExtension: String)? {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: [UTType.image.identifier],
+        ]
+        if let file = (pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL])?.first,
+           let data = try? Data(contentsOf: file) {
+            return (data, file.pathExtension.lowercased())
+        }
+        // Text wins when the clipboard has both (e.g. cells copied from a spreadsheet), unless it is just the image's URL.
+        if let text = pasteboard.string(forType: .string), !text.hasPrefix("http") { return nil }
+        if let png = pasteboard.data(forType: .png) { return (png, "png") }
+        if let tiff = pasteboard.data(forType: .tiff),
+           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            return (png, "png")
+        }
+        return nil
     }
 
     // MARK: Formatting shortcuts

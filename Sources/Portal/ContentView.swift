@@ -32,7 +32,6 @@ struct ContentView: View {
     @Bindable var store: NoteStore
     @State private var tooltip: ToolbarAction?
     @State private var hoverTask: Task<Void, Never>?
-    @State private var vimMode = VimMode.normal
     @State private var palette: Palette?
     @State private var editor = EditorController()
 
@@ -49,11 +48,15 @@ struct ContentView: View {
         .toolbar(removing: .title)
         .toolbar { toolbarContent }
         .background(FloatingWindowConfigurator())
-        .onAppear { editor.openLink = { store.open(link: $0) } }
+        .onAppear {
+            editor.openLink = { store.open(link: $0) }
+            editor.saveImage = { store.saveImage($0, fileExtension: $1) }
+            editor.resolveImage = { store.resolveImage($0) }
+        }
     }
 
     private var editorView: some View {
-        MarkdownEditor(text: $store.text, vimMode: $vimMode, controller: editor)
+        MarkdownEditor(text: $store.text, controller: editor)
             .overlay(alignment: .topLeading) {
                 if store.text.isEmpty {
                     Text("Start writing...")
@@ -72,11 +75,6 @@ struct ContentView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .topTrailing)))
                         .allowsHitTesting(false)
                 }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                VimModeLabel(mode: vimMode)
-                    .padding(14)
-                    .allowsHitTesting(false)
             }
             .overlay(alignment: .top) {
                 if let palette {
@@ -256,18 +254,6 @@ private struct NoVaultView: View {
                 .buttonStyle(.glass)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct VimModeLabel: View {
-    let mode: VimMode
-
-    var body: some View {
-        Text(mode.label)
-            .font(.caption.weight(.semibold).monospaced())
-            .foregroundStyle(.secondary)
-            .contentTransition(.interpolate)
-            .animation(.snappy(duration: 0.2), value: mode)
     }
 }
 

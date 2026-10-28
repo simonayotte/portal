@@ -9,12 +9,32 @@ extension NSAttributedString.Key {
     static let markdownCheckbox = NSAttributedString.Key("PortalMarkdownCheckbox")
     /// Inline code drawn with a rounded background.
     static let markdownInlineCode = NSAttributedString.Key("PortalMarkdownInlineCode")
+    /// Lines that take no space unless the caret is on them (empty front matter).
+    static let markdownCollapsed = NSAttributedString.Key("PortalMarkdownCollapsed")
+    /// Image shown in place of an embed line; the value is an `ImageEmbed`.
+    static let markdownImage = NSAttributedString.Key("PortalMarkdownImage")
     /// Block decoration drawn behind the text.
     static let markdownBlock = NSAttributedString.Key("PortalMarkdownBlock")
 }
 
 enum MarkdownBlock: String {
     case code, quote, rule
+}
+
+/// An image embed: `![[image.png|300]]` or `![alt](path/to/image.png)`.
+final class ImageEmbed: NSObject {
+    let source: String
+    /// Obsidian `![[…]]` embeds are found anywhere in the vault; `![](…)` paths are relative.
+    let isWikilink: Bool
+    let width: CGFloat?
+
+    init(source: String, isWikilink: Bool, width: CGFloat?) {
+        self.source = source
+        self.isWikilink = isWikilink
+        self.width = width
+    }
+
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp", "svg"]
 }
 
 /// Styles Markdown source in place so the editor reads like rendered text.
@@ -48,7 +68,15 @@ enum MarkdownStyler {
     private static let codeSpan = regex(#"(`)([^`\n]+)(`)"#)
     static let wikilinkScheme = "portal-wikilink"
     private static let wikilink = regex(#"(!?\[\[)([^\]|\n]+)(\|[^\]\n]*)?(\]\])"#)
-    private static let frontmatter = regex(#"\A---\n[\s\S]*?\n---[ \t]*$"#)
+    private static let frontmatter = regex(#"\A---\n(?:[\s\S]*?\n)?---[ \t]*$"#)
+
+    /// Where a note's content starts, after any front matter.
+    static func bodyStart(of text: NSString) -> Int {
+        guard let match = frontmatter.firstMatch(in: text as String, range: NSRange(location: 0, length: text.length)) else { return 0 }
+        let end = NSMaxRange(match.range)
+        return end < text.length ? end + 1 : end
+    }
+    private static let imageEmbed = regex(#"^[ \t]*(?:!\[\[([^\]|\n]+)(?:\|([^\]\n]*))?\]\]|!\[([^\]\n]*)\]\(([^)\n]+)\))[ \t]*$"#)
     private static let link = regex(#"(\[)([^\]\n]+)(\]\(([^)\s]+)\))"#)
     private static let listItem = regex(#"^([ \t]*)([-*+]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$"#)
     private static let quote = regex(#"^[ \t]*(>[ \t]?)(.*)$"#)
@@ -120,6 +148,18 @@ enum MarkdownStyler {
             }
             hide(m.range(at: 1), m.range(at: 3))
         }
+        for m in matches(imageEmbed) {
+            let isWikilink = m.range(at: 1).location != NSNotFound
+            let source = string.substring(with: m.range(at: isWikilink ? 1 : 4)).trimmingCharacters(in: .whitespaces)
+            guard ImageEmbed.imageExtensions.contains((source as NSString).pathExtension.lowercased()) else { continue }
+            // Obsidian sizes images with `![[image.png|300]]` or `![alt|300](image.png)`.
+            let sizeGroup = m.range(at: isWikilink ? 2 : 3)
+            let size = sizeGroup.location == NSNotFound ? nil : string.substring(with: sizeGroup).split(separator: "|").last
+            let width = size.flatMap { Double($0.split(separator: "x").first ?? "") }.map { CGFloat($0) }
+            storage.removeAttribute(.link, range: m.range)
+            hide(m.range)
+            storage.addAttribute(.markdownImage, value: ImageEmbed(source: source, isWikilink: isWikilink, width: width), range: m.range)
+        }
         for m in matches(listItem) {
             let indent = string.substring(with: m.range(at: 1))
             let marker = m.range(at: 2)
@@ -187,6 +227,12 @@ enum MarkdownStyler {
             var attributes = baseAttributes
             attributes[.font] = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
             attributes[.foregroundColor] = NSColor.secondaryLabelColor
+            // Like Obsidian, empty properties are not shown.
+            let properties = string.substring(with: m.range).split(separator: "\n").dropFirst().dropLast()
+            if properties.allSatisfy({ $0.allSatisfy(\.isWhitespace) }) {
+                attributes[.markdownMarker] = true
+                attributes[.markdownCollapsed] = true
+            }
             storage.setAttributes(attributes, range: m.range)
         }
         storage.endEditing()

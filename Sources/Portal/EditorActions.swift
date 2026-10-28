@@ -4,10 +4,22 @@ import AppKit
 @MainActor
 final class EditorController {
     weak var textView: MarkdownTextView? {
-        didSet { textView?.openLink = { [weak self] in self?.openLink?($0) } }
+        didSet {
+            textView?.openLink = { [weak self] in self?.openLink?($0) }
+            textView?.saveImage = { [weak self] in self?.saveImage?($0, $1) ?? nil }
+            layoutManager?.resolveImage = resolveImage
+        }
     }
     /// Opens the note a clicked `[[wikilink]]` points to.
     var openLink: ((String) -> Void)?
+    /// Saves a pasted image to the vault and returns the embed to insert.
+    var saveImage: ((Data, String) -> String?)?
+    /// Finds the file an image embed points to.
+    var resolveImage: ((ImageEmbed) -> URL?)? {
+        didSet { layoutManager?.resolveImage = resolveImage }
+    }
+
+    private var layoutManager: MarkdownLayoutManager? { textView?.layoutManager as? MarkdownLayoutManager }
 
     func focus() {
         textView?.window?.makeFirstResponder(textView)

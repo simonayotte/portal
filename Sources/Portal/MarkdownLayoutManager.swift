@@ -1,10 +1,24 @@
 import AppKit
 
-/// Renders the decorations the styler marks up: hides syntax off the active line,
-/// swaps list dashes for bullets, and draws checkboxes, quote bars, rules and code backgrounds.
+/// Renders the decorations the styler marks up: hides syntax off the active line, swaps list dashes
+/// for bullets, and draws checkboxes, quote bars, rules, code backgrounds and embedded images.
 final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     /// Character range of the line(s) holding the selection; syntax stays visible there.
     var activeLine = NSRange()
+    /// Character Vim's block cursor sits on, or `nil` in Insert mode.
+    var blockCursor: Int?
+    /// Finds the file an image embed points to.
+    var resolveImage: ((ImageEmbed) -> URL?)? {
+        didSet {
+            forgetImages()
+            invalidateLayout(forCharacterRange: NSRange(location: 0, length: textStorage?.length ?? 0), actualCharacterRange: nil)
+        }
+    }
+    private var images: [URL: NSImage] = [:]
+    /// Resolved embed sources (including misses), until the next note loads.
+    private var resolved: [String: URL?] = [:]
+    private static let imageSpacing: CGFloat = 10
+    private static let maxImageHeight: CGFloat = 480
 
     override init() {
         super.init()
@@ -14,6 +28,47 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     private func isActive(_ index: Int) -> Bool { NSLocationInRange(index, activeLine) }
+
+    /// Syntax off the active line is hidden; an image embed's text only when its image can be shown.
+    private func isHiddenMarker(at index: Int) -> Bool {
+        guard !isActive(index), let storage = textStorage,
+              storage.attribute(.markdownMarker, at: index, effectiveRange: nil) != nil else { return false }
+        if let embed = storage.attribute(.markdownImage, at: index, effectiveRange: nil) as? ImageEmbed {
+            return image(for: embed) != nil
+        }
+        return true
+    }
+
+    // MARK: Images
+
+    /// Drops resolved image paths, e.g. when another note (with other relative paths) loads.
+    func forgetImages() {
+        images.removeAll()
+        resolved.removeAll()
+    }
+
+    private func image(for embed: ImageEmbed) -> NSImage? {
+        let key = "\(embed.isWikilink)|\(embed.source)"
+        let url = resolved[key] ?? resolveImage?(embed)
+        resolved[key] = url
+        guard let url else { return nil }
+        if let image = images[url] { return image }
+        guard let image = NSImage(contentsOf: url), image.size.width > 0 else { return nil }
+        images[url] = image
+        return image
+    }
+
+    /// Fits the image to the text width (or the embed's `|width`) without upscaling, capped in height.
+    private func size(of image: NSImage, for embed: ImageEmbed, in container: NSTextContainer) -> NSSize {
+        let available = container.size.width - container.lineFragmentPadding * 2
+        var width = min(embed.width ?? image.size.width, image.size.width, available)
+        var height = image.size.height * width / image.size.width
+        if height > Self.maxImageHeight {
+            width *= Self.maxImageHeight / height
+            height = Self.maxImageHeight
+        }
+        return NSSize(width: width, height: height)
+    }
 
     // MARK: Glyphs
 
@@ -32,7 +87,7 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         for i in newGlyphs.indices {
             let index = characterIndexes[i]
             let attributes = storage.attributes(at: index, effectiveRange: nil)
-            if attributes[.markdownMarker] != nil, !isActive(index) {
+            if attributes[.markdownMarker] != nil, isHiddenMarker(at: index) {
                 // A zero-width control glyph stays on its own line (`.null` glyphs drift to the previous one).
                 newProperties[i] = .controlCharacter
                 changed = true
@@ -56,8 +111,37 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         shouldUse action: NSLayoutManager.ControlCharacterAction,
         forControlCharacterAt charIndex: Int
     ) -> NSLayoutManager.ControlCharacterAction {
-        let isMarker = textStorage?.attribute(.markdownMarker, at: charIndex, effectiveRange: nil) != nil
-        return isMarker && !isActive(charIndex) ? .zeroAdvancement : action
+        isHiddenMarker(at: charIndex) ? .zeroAdvancement : action
+    }
+
+    /// Makes room for embedded images below their line, and collapses empty front matter
+    /// unless the caret is on it.
+    func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
+        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
+        baselineOffset: UnsafeMutablePointer<CGFloat>,
+        in textContainer: NSTextContainer,
+        forGlyphRange glyphRange: NSRange
+    ) -> Bool {
+        let index = characterIndexForGlyph(at: glyphRange.location)
+        guard let storage = textStorage, index < storage.length else { return false }
+
+        if let embed = storage.attribute(.markdownImage, at: index, effectiveRange: nil) as? ImageEmbed,
+           let image = image(for: embed) {
+            // Off the active line the image replaces its text; on it, the image sits below the text.
+            let height = size(of: image, for: embed, in: textContainer).height + Self.imageSpacing
+            let lineHeight = isActive(index) ? lineFragmentRect.pointee.height : 0
+            lineFragmentRect.pointee.size.height = lineHeight + height
+            lineFragmentUsedRect.pointee.size.height = lineHeight + height
+            return true
+        }
+
+        guard !isActive(index), storage.attribute(.markdownCollapsed, at: index, effectiveRange: nil) != nil else { return false }
+        lineFragmentRect.pointee.size.height = 0
+        lineFragmentUsedRect.pointee.size.height = 0
+        baselineOffset.pointee = 0
+        return true
     }
 
     // MARK: Drawing
@@ -85,6 +169,27 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             case .rule:
                 break
             }
+        }
+
+        storage.enumerateAttribute(.markdownImage, in: characters) { value, range, _ in
+            guard let embed = value as? ImageEmbed, let image = image(for: embed) else { return }
+            let fragment = lineFragmentRect(forGlyphAt: glyphIndexForCharacter(at: range.location), effectiveRange: nil)
+            let size = size(of: image, for: embed, in: container)
+            let rect = NSRect(
+                x: left,
+                y: origin.y + fragment.maxY - size.height - Self.imageSpacing / 2,
+                width: size.width,
+                height: size.height
+            )
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).addClip()
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        if let blockCursor, let rect = blockCursorRect(at: blockCursor, in: container) {
+            NSColor.controlAccentColor.withAlphaComponent(0.5).setFill()
+            NSBezierPath(roundedRect: rect.offsetBy(dx: origin.x, dy: origin.y), xRadius: 2, yRadius: 2).fill()
         }
 
         storage.enumerateAttribute(.markdownInlineCode, in: characters) { value, range, _ in
@@ -121,6 +226,34 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
             )
             image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         }
+    }
+
+    /// The block covering the character at `index`, a letter wide on an empty line or at a line end.
+    private func blockCursorRect(at index: Int, in container: NSTextContainer) -> NSRect? {
+        guard let storage = textStorage else { return nil }
+        func font(at index: Int) -> NSFont {
+            let font = index >= 0 && index < storage.length ? storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont : nil
+            return font ?? .systemFont(ofSize: 14)
+        }
+        func emptyWidth(_ font: NSFont) -> CGFloat {
+            ("n" as NSString).size(withAttributes: [.font: font]).width
+        }
+
+        // On the empty last line (or in an empty note) the caret sits in the extra line fragment.
+        guard index < storage.length else {
+            let font = font(at: storage.length - 1)
+            let extra = extraLineFragmentRect
+            return NSRect(x: extra.minX + container.lineFragmentPadding, y: extra.minY, width: emptyWidth(font), height: font.ascender - font.descender)
+        }
+        let glyph = glyphIndexForCharacter(at: index)
+        let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let location = location(forGlyphAt: glyph)
+        let font = font(at: index)
+        let isNewline = (storage.string as NSString).character(at: index) == 10
+        let glyphWidth = boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).width
+        let width = isNewline || glyphWidth < 1 ? emptyWidth(font) : glyphWidth
+        let baseline = fragment.minY + location.y
+        return NSRect(x: fragment.minX + location.x, y: baseline - font.ascender, width: width, height: font.ascender - font.descender)
     }
 
     private func lineFragmentsRect(for characters: NSRange) -> NSRect {

@@ -22,6 +22,8 @@ final class NoteStore {
     @ObservationIgnored private var isDirty = false
     @ObservationIgnored private var loadedModified: Date?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    /// Image files in the vault by lowercased file name, for `![[image.png]]` embeds.
+    @ObservationIgnored private var imageFiles: [String: URL] = [:]
     /// Notes started in Portal; only these are renamed after their first line.
     @ObservationIgnored private var createdHere: Set<URL> = []
 
@@ -76,7 +78,9 @@ final class NoteStore {
     /// Rescans the vault and reloads the open note if it changed on disk (e.g. edited in Obsidian).
     func refresh() {
         guard let vault else { return }
-        var found = scan(vault)
+        let scanned = scan(vault)
+        var found = scanned.notes
+        imageFiles = scanned.images
         // Keep a new note that has not been written yet.
         if let selected, !found.contains(where: { $0.id == selected.id }), !FileManager.default.fileExists(atPath: selected.url.path) {
             found.insert(selected, at: 0)
@@ -85,17 +89,23 @@ final class NoteStore {
         reloadIfChangedOnDisk()
     }
 
-    private func scan(_ vault: URL) -> [Note] {
+    private func scan(_ vault: URL) -> (notes: [Note], images: [String: URL]) {
         guard let files = FileManager.default.enumerator(
             at: vault,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return [] }
-        return files
-            .compactMap { $0 as? URL }
-            .filter { $0.pathExtension.lowercased() == "md" }
-            .map { Note(url: $0.standardizedFileURL, modified: Self.modificationDate($0) ?? .distantPast) }
-            .sorted { $0.modified > $1.modified }
+        ) else { return ([], [:]) }
+        var notes: [Note] = []
+        var images: [String: URL] = [:]
+        for case let url as URL in files {
+            let fileExtension = url.pathExtension.lowercased()
+            if fileExtension == "md" {
+                notes.append(Note(url: url.standardizedFileURL, modified: Self.modificationDate(url) ?? .distantPast))
+            } else if ImageEmbed.imageExtensions.contains(fileExtension) {
+                images[url.lastPathComponent.lowercased()] = url.standardizedFileURL
+            }
+        }
+        return (notes.sorted { $0.modified > $1.modified }, images)
     }
 
     private func reloadIfChangedOnDisk() {
@@ -175,6 +185,49 @@ final class NoteStore {
         UserDefaults.standard.set(id.path, forKey: Self.lastNoteKey)
     }
 
+    // MARK: Images
+
+    /// File an image embed points to: `![](path)` relative to the note or the vault,
+    /// `![[name]]` by vault path or, like Obsidian, by file name anywhere in the vault.
+    func resolveImage(_ embed: ImageEmbed) -> URL? {
+        guard let vault else { return nil }
+        if let url = URL(string: embed.source), let scheme = url.scheme {
+            return scheme == "file" ? url : nil
+        }
+        let path = embed.source.removingPercentEncoding ?? embed.source
+        var candidates = [vault.appending(path: path)]
+        if !embed.isWikilink, let folder = selected?.url.deletingLastPathComponent() {
+            candidates.insert(folder.appending(path: path), at: 0)
+        }
+        let found = candidates.map(\.standardizedFileURL).first { FileManager.default.fileExists(atPath: $0.path) }
+        return found ?? imageFiles[(path as NSString).lastPathComponent.lowercased()]
+    }
+
+    /// Saves a pasted image where Obsidian puts attachments and returns the embed to insert.
+    func saveImage(_ data: Data, fileExtension: String) -> String? {
+        guard let vault else { return nil }
+        let folder = Obsidian.attachmentFolder(in: vault, note: selected?.url)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMddHHmmss"
+        let base = "Pasted image \(formatter.string(from: .now))"
+        var name = "\(base).\(fileExtension)"
+        var suffix = 0
+        while FileManager.default.fileExists(atPath: folder.appending(path: name).path) {
+            suffix += 1
+            name = "\(base) \(suffix).\(fileExtension)"
+        }
+        let url = folder.appending(path: name).standardizedFileURL
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try data.write(to: url)
+        } catch {
+            return nil
+        }
+        imageFiles[name.lowercased()] = url
+        return "![[\(name)]]"
+    }
+
     // MARK: Saving
 
     func flush() {
@@ -238,6 +291,12 @@ enum Obsidian {
     private struct AppSettings: Decodable {
         let newFileLocation: String?
         let newFileFolderPath: String?
+        let attachmentFolderPath: String?
+    }
+
+    private static func settings(in vault: URL) -> AppSettings? {
+        (try? Data(contentsOf: vault.appending(path: ".obsidian/app.json")))
+            .flatMap { try? JSONDecoder().decode(AppSettings.self, from: $0) }
     }
 
     /// The vault Obsidian has open, or the one it opened most recently.
@@ -251,8 +310,7 @@ enum Obsidian {
 
     /// Folder for new notes per Obsidian's "Default location for new notes" setting.
     static func newNoteFolder(in vault: URL, current: URL?) -> URL {
-        let settings = (try? Data(contentsOf: vault.appending(path: ".obsidian/app.json")))
-            .flatMap { try? JSONDecoder().decode(AppSettings.self, from: $0) }
+        let settings = settings(in: vault)
         switch settings?.newFileLocation {
         case "current":
             return current?.deletingLastPathComponent() ?? vault
@@ -261,5 +319,15 @@ enum Obsidian {
         default:
             return vault
         }
+    }
+
+    /// Folder for pasted images per Obsidian's "Default location for new attachments" setting.
+    static func attachmentFolder(in vault: URL, note: URL?) -> URL {
+        let path = settings(in: vault)?.attachmentFolderPath ?? "/"
+        let noteFolder = note?.deletingLastPathComponent() ?? vault
+        if path.isEmpty || path == "/" { return vault }
+        if path == "./" || path == "." { return noteFolder }
+        if path.hasPrefix("./") { return noteFolder.appending(path: String(path.dropFirst(2)), directoryHint: .isDirectory) }
+        return vault.appending(path: path, directoryHint: .isDirectory)
     }
 }
