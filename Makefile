@@ -11,6 +11,7 @@ app:
 	rm -rf $(APP) && mkdir -p $(APP)/Contents/MacOS
 	cp .build/release/Portal $(APP)/Contents/MacOS/
 	cp Info.plist $(APP)/Contents/
+	cp -R Resources $(APP)/Contents/
 	codesign --force --sign - $(APP)
 
 clean:

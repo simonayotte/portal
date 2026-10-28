@@ -253,6 +253,11 @@ enum MarkdownStyler {
                 $0.tailIndent = -12
             }
             storage.setAttributes(attributes, range: m.range)
+            let code = m.range(at: 2)
+            let language = string.substring(with: m.range(at: 1)).dropFirst(3).split(separator: " ").first.map(String.init) ?? ""
+            for token in SyntaxHighlighter.tokens(in: string.substring(with: code), language: language.lowercased()) {
+                storage.addAttribute(.foregroundColor, value: token.color, range: NSRange(location: code.location + token.range.location, length: token.range.length))
+            }
             for fence in [m.range(at: 1), m.range(at: 3)] {
                 storage.addAttributes([
                     .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
