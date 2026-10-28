@@ -40,7 +40,7 @@ final class VimEngine {
         }
         let key: String? = switch (event.keyCode, modifiers) {
         case _ where isEscape: "<Esc>"
-        case (_, .control) where characters == "r": "<C-r>"
+        case (_, .control) where ["r", "d", "u"].contains(characters): "<C-\(characters)>"
         case (123, _), (51, _): "h"
         case (124, _): "l"
         case (125, _), (36, _): "j"
@@ -396,6 +396,8 @@ final class VimEngine {
             return .motion(op == nil
                 ? Motion(target: buffer.lastChar(last), kind: .inclusive)
                 : Motion(target: buffer.contentEnd(last), kind: .exclusive))
+        case "<C-d>", "<C-u>":
+            return .motion(Motion(target: scrollHalfPage(down: key == "<C-d>"), kind: .linewise))
         case "G":
             let target = count == nil ? buffer.lastLine : lineNumber()
             return .motion(Motion(target: buffer.firstNonBlank(target), kind: .linewise))
@@ -426,6 +428,21 @@ final class VimEngine {
         default:
             return .notMotion
         }
+    }
+
+    /// `<C-d>` / `<C-u>`: scrolls half a screen and returns the line start as far below / above the cursor.
+    private func scrollHalfPage(down: Bool) -> Int {
+        guard let layoutManager = view.layoutManager, let container = view.textContainer,
+              let scrollView = view.enclosingScrollView else { return cursor }
+        let clip = scrollView.contentView
+        let delta = clip.bounds.height / 2 * (down ? 1 : -1)
+        let line = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndexForCharacter(at: cursor), effectiveRange: nil)
+        let index = layoutManager.characterIndex(for: NSPoint(x: line.minX, y: line.midY + delta), in: container, fractionOfDistanceBetweenInsertionPoints: nil)
+        let top = min(max(clip.bounds.minY + delta, 0), max(view.frame.height - clip.bounds.height, 0))
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: top))
+        scrollView.reflectScrolledClipView(clip)
+        let buffer = buffer
+        return buffer.firstNonBlank(buffer.line(of: index))
     }
 }
 
