@@ -11,7 +11,10 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
     var resolveImage: ((ImageEmbed) -> URL?)? {
         didSet {
             forgetImages()
-            invalidateLayout(forCharacterRange: NSRange(location: 0, length: textStorage?.length ?? 0), actualCharacterRange: nil)
+            // Whether an embed's text hides depends on finding its image, so redo glyphs as well as layout.
+            let all = NSRange(location: 0, length: textStorage?.length ?? 0)
+            invalidateGlyphs(forCharacterRange: all, changeInLength: 0, actualCharacterRange: nil)
+            invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         }
     }
     private var images: [URL: NSImage] = [:]

@@ -89,9 +89,9 @@ enum MarkdownStyler {
         func matches(_ regex: NSRegularExpression) -> [NSTextCheckingResult] {
             regex.matches(in: storage.string, range: full)
         }
-        func hide(_ ranges: NSRange...) {
+        func hide(_ ranges: NSRange..., color: NSColor = .tertiaryLabelColor) {
             for range in ranges where range.location != NSNotFound {
-                storage.addAttributes([.markdownMarker: true, .foregroundColor: NSColor.tertiaryLabelColor], range: range)
+                storage.addAttributes([.markdownMarker: true, .foregroundColor: color], range: range)
             }
         }
         func width(_ text: String) -> CGFloat {
@@ -140,13 +140,13 @@ enum MarkdownStyler {
             // `[[target|alias]]` shows only the alias.
             let shown = alias.location == NSNotFound ? m.range(at: 2) : NSRange(location: alias.location + 1, length: alias.length - 1)
             storage.addAttributes([.link: link, .foregroundColor: NSColor.controlAccentColor], range: shown)
-            hide(NSRange(location: m.range.location, length: shown.location - m.range.location), m.range(at: 4))
+            hide(NSRange(location: m.range.location, length: shown.location - m.range.location), m.range(at: 4), color: .secondaryLabelColor)
         }
         for m in matches(link) {
             if let url = URL(string: string.substring(with: m.range(at: 4))) {
                 storage.addAttributes([.link: url, .foregroundColor: NSColor.controlAccentColor], range: m.range(at: 2))
             }
-            hide(m.range(at: 1), m.range(at: 3))
+            hide(m.range(at: 1), m.range(at: 3), color: .secondaryLabelColor)
         }
         for m in matches(imageEmbed) {
             let isWikilink = m.range(at: 1).location != NSNotFound
@@ -157,7 +157,9 @@ enum MarkdownStyler {
             let size = sizeGroup.location == NSNotFound ? nil : string.substring(with: sizeGroup).split(separator: "|").last
             let width = size.flatMap { Double($0.split(separator: "x").first ?? "") }.map { CGFloat($0) }
             storage.removeAttribute(.link, range: m.range)
-            hide(m.range)
+            // Shown while editing the line: the file name reads like a link, the syntax around it a step quieter.
+            hide(m.range, color: .secondaryLabelColor)
+            storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: m.range(at: isWikilink ? 1 : 4))
             storage.addAttribute(.markdownImage, value: ImageEmbed(source: source, isWikilink: isWikilink, width: width), range: m.range)
         }
         for m in matches(listItem) {

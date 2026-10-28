@@ -10,7 +10,7 @@ private enum ToolbarAction: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .actionPanel: "command"
-        case .browseNotes: "rectangle.portrait.on.rectangle.portrait.angled"
+        case .browseNotes: "square.stack"
         case .createNote: "plus"
         }
     }
@@ -44,7 +44,12 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 280, minHeight: 220)
-        .containerBackground(.thickMaterial, for: .window)
+        .containerBackground(for: .window) {
+            // A light blur under a mostly opaque paper color: bright and calm, with a hint of what is behind.
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .overlay(Color(nsColor: .textBackgroundColor).opacity(0.5))
+        }
         .toolbar(removing: .title)
         .toolbar { toolbarContent }
         .background(FloatingWindowConfigurator())
