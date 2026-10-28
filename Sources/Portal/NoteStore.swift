@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Observation
 
 struct Note: Identifiable, Hashable {
@@ -24,6 +24,8 @@ final class NoteStore {
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     /// Image files in the vault by lowercased file name, for `![[image.png]]` embeds.
     @ObservationIgnored private var imageFiles: [String: URL] = [:]
+    /// Whether Obsidian is open; its own plugins then react to new notes. Replaceable for tests.
+    @ObservationIgnored var isObsidianRunning: () -> Bool = { Obsidian.isRunning }
     /// Notes started in Portal; only these are renamed after their first line.
     @ObservationIgnored private var createdHere: Set<URL> = []
 
@@ -197,14 +199,71 @@ final class NoteStore {
                 let file = vault.appending(path: path.hasSuffix(".md") ? path : path + ".md")
                 return try? String(contentsOf: file, encoding: .utf8)
             }
-            let text = Obsidian.fillTemplate(template ?? "", title: name, date: date, dateFormat: settings.format)
+            var text = Obsidian.fillTemplate(template ?? "", title: name, date: date, dateFormat: settings.format)
+            // Roll unfinished todos over like the Rollover Daily Todos plugin. When Obsidian is open the plugin
+            // does it itself as soon as it sees the new note, so Portal only picks up its edit.
+            let rollover = Obsidian.rolloverSettings(in: vault).flatMap { $0.rolloverOnFileCreate ? $0 : nil }
+            let pluginRollsOver = rollover != nil && isObsidianRunning()
+            if let rollover, !pluginRollsOver, let previous = previousDailyNote(before: date, settings: settings) {
+                text = roll(from: previous, into: text, settings: rollover)
+            }
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             guard (try? text.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
+            if pluginRollsOver { reloadAfterExternalEdit(of: url) }
         }
         if !notes.contains(where: { $0.id == url }) {
             notes.insert(Note(url: url, modified: .now), at: 0)
         }
         select(url)
+    }
+
+    /// The most recent daily note before `date`.
+    private func previousDailyNote(before date: Date, settings: Obsidian.DailyNoteSettings) -> URL? {
+        guard let vault else { return nil }
+        let folder = vault.appending(path: settings.folder, directoryHint: .isDirectory).standardizedFileURL.path + "/"
+        let today = Calendar.current.startOfDay(for: date)
+        let dailyNotes = notes.compactMap { note -> (url: URL, day: Date)? in
+            let path = note.url.deletingPathExtension().path
+            guard path.hasPrefix(folder), let day = Obsidian.date(from: String(path.dropFirst(folder.count)), format: settings.format),
+                  day < today else { return nil }
+            return (note.url, day)
+        }
+        return dailyNotes.max { $0.day < $1.day }?.url
+    }
+
+    /// Copies the previous daily note's unfinished todos into `text`, as the Rollover Daily Todos plugin does.
+    private func roll(from previous: URL, into text: String, settings: Obsidian.RolloverSettings) -> String {
+        guard let previousText = try? String(contentsOf: previous, encoding: .utf8) else { return text }
+        let found = Obsidian.unfinishedTodos(in: previousText, settings: settings)
+        let todos = settings.removeEmptyTodos
+            ? found.filter { !["- [ ]", "- [  ]"].contains($0.trimmingCharacters(in: .whitespaces)) }
+            : found
+        guard !todos.isEmpty else { return text }
+
+        let block = "\n" + todos.joined(separator: "\n")
+        var result = text + block
+        if settings.templateHeading != "none", let heading = text.range(of: settings.templateHeading) {
+            result = text.replacingCharacters(in: heading, with: settings.templateHeading + block)
+        }
+        if settings.deleteOnComplete {
+            let kept = previousText.split(separator: "\n", omittingEmptySubsequences: false).filter { !found.contains(String($0)) }
+            try? kept.joined(separator: "\n").write(to: previous, atomically: true, encoding: .utf8)
+        }
+        return result
+    }
+
+    /// Reloads `url` once something else edits it, for a few seconds, unless you have started typing.
+    private func reloadAfterExternalEdit(of url: URL) {
+        Task { [weak self] in
+            for _ in 0..<12 {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, self.selectedID == url, !self.isDirty else { return }
+                if Self.modificationDate(url) != self.loadedModified {
+                    self.reloadIfChangedOnDisk()
+                    return
+                }
+            }
+        }
     }
 
     // MARK: Images
@@ -364,6 +423,17 @@ enum Obsidian {
 
     /// Formats `date` with a Moment.js format string, as Obsidian does (common tokens only).
     static func format(_ date: Date, _ moment: String) -> String {
+        dateFormatter(moment).string(from: date)
+    }
+
+    /// Parses `string` strictly with a Moment.js format; `nil` unless it round-trips exactly.
+    static func date(from string: String, format moment: String) -> Date? {
+        let formatter = dateFormatter(moment)
+        guard let date = formatter.date(from: string), formatter.string(from: date) == string else { return nil }
+        return date
+    }
+
+    private static func dateFormatter(_ moment: String) -> DateFormatter {
         let tokens: [String: String] = [
             "YYYY": "yyyy", "YY": "yy", "MMMM": "MMMM", "MMM": "MMM", "MM": "MM", "M": "M",
             "DD": "dd", "D": "d", "dddd": "EEEE", "ddd": "EEE", "HH": "HH", "H": "H",
@@ -385,7 +455,79 @@ enum Obsidian {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = pattern
-        return formatter.string(from: date)
+        return formatter
+    }
+
+    @MainActor static var isRunning: Bool {
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "md.obsidian" }
+    }
+
+    /// Settings of the Rollover Daily Todos community plugin, or `nil` when it is not enabled.
+    struct RolloverSettings: Decodable {
+        var templateHeading = "none"
+        var deleteOnComplete = false
+        var removeEmptyTodos = false
+        var rolloverChildren = false
+        var rolloverOnFileCreate = true
+        var doneStatusMarkers = "xX-"
+
+        private enum CodingKeys: String, CodingKey {
+            case templateHeading, deleteOnComplete, removeEmptyTodos, rolloverChildren, rolloverOnFileCreate, doneStatusMarkers
+        }
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            templateHeading = try values.decodeIfPresent(String.self, forKey: .templateHeading) ?? templateHeading
+            deleteOnComplete = try values.decodeIfPresent(Bool.self, forKey: .deleteOnComplete) ?? deleteOnComplete
+            removeEmptyTodos = try values.decodeIfPresent(Bool.self, forKey: .removeEmptyTodos) ?? removeEmptyTodos
+            rolloverChildren = try values.decodeIfPresent(Bool.self, forKey: .rolloverChildren) ?? rolloverChildren
+            rolloverOnFileCreate = try values.decodeIfPresent(Bool.self, forKey: .rolloverOnFileCreate) ?? rolloverOnFileCreate
+            doneStatusMarkers = try values.decodeIfPresent(String.self, forKey: .doneStatusMarkers) ?? doneStatusMarkers
+        }
+    }
+
+    static func rolloverSettings(in vault: URL) -> RolloverSettings? {
+        let id = "obsidian-rollover-daily-todos"
+        let enabled = (try? Data(contentsOf: vault.appending(path: ".obsidian/community-plugins.json")))
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+        guard enabled.contains(id) else { return nil }
+        let data = try? Data(contentsOf: vault.appending(path: ".obsidian/plugins/\(id)/data.json"))
+        return data.flatMap { try? JSONDecoder().decode(RolloverSettings.self, from: $0) } ?? RolloverSettings()
+    }
+
+    /// Unfinished todos (`- [ ]`, or any status not in the done markers), with their nested lines when
+    /// `rolloverChildren` is on — the same rules as the plugin.
+    static func unfinishedTodos(in text: String, settings: RolloverSettings) -> [String] {
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        func indentation(_ line: String) -> Int {
+            line.firstIndex { !$0.isWhitespace }.map { line.distance(from: line.startIndex, to: $0) } ?? -1
+        }
+        func isTodo(_ line: String) -> Bool {
+            guard let status = line.firstMatch(of: /\s*[*+-] \[(.+?)\]/)?.1, status.count == 1,
+                  !status.unicodeScalars.contains(where: { ["\u{202E}", "\u{200B}", "\u{200C}", "\u{200D}"].contains($0) })
+            else { return false }
+            return !status.contains { settings.doneStatusMarkers.contains($0) }
+        }
+
+        var todos: [String] = []
+        var index = 0
+        while index < lines.count {
+            if isTodo(lines[index]) {
+                todos.append(lines[index])
+                if settings.rolloverChildren {
+                    var child = index + 1
+                    while child < lines.count, indentation(lines[child]) > indentation(lines[index]) {
+                        todos.append(lines[child])
+                        child += 1
+                    }
+                    index = child - 1
+                }
+            }
+            index += 1
+        }
+        return todos
     }
 
     /// The vault Obsidian has open, or the one it opened most recently.
