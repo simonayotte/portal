@@ -1,7 +1,33 @@
 import SwiftUI
 
+private enum ToolbarAction: String, CaseIterable, Identifiable {
+    case actionPanel = "Action Panel"
+    case browseNotes = "Browse Notes"
+    case createNote = "Create Note"
+
+    var id: Self { self }
+
+    var symbol: String {
+        switch self {
+        case .actionPanel: "command"
+        case .browseNotes: "rectangle.portrait.on.rectangle.portrait.angled"
+        case .createNote: "plus"
+        }
+    }
+
+    var key: Character {
+        switch self {
+        case .actionPanel: "k"
+        case .browseNotes: "p"
+        case .createNote: "n"
+        }
+    }
+}
+
 struct ContentView: View {
     @Bindable var store: NoteStore
+    @State private var tooltip: ToolbarAction?
+    @State private var hoverTask: Task<Void, Never>?
 
     var body: some View {
         MarkdownEditor(text: $store.text)
@@ -12,6 +38,15 @@ struct ContentView: View {
                         .foregroundStyle(.tertiary)
                         .padding(.leading, MarkdownEditor.inset.width + 5)
                         .padding(.top, MarkdownEditor.inset.height)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if let tooltip {
+                    Tooltip(action: tooltip)
+                        .padding(.top, 6)
+                        .padding(.trailing, 12)
+                        .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .topTrailing)))
                         .allowsHitTesting(false)
                 }
             }
@@ -27,16 +62,61 @@ struct ContentView: View {
                 }
                 .sharedBackgroundVisibility(.hidden)
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button("Commands", systemImage: "command") {}
-                    Button("Copy", systemImage: "rectangle.portrait.on.rectangle.portrait.angled") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(store.text, forType: .string)
+                    ForEach(ToolbarAction.allCases) { action in
+                        Button(action.rawValue, systemImage: action.symbol) { perform(action) }
+                            .keyboardShortcut(KeyEquivalent(action.key))
+                            .onHover { hover(action, isHovering: $0) }
                     }
-                    Button("New Note", systemImage: "plus") { store.create() }
-                        .keyboardShortcut("n")
                 }
             }
             .background(FloatingWindowConfigurator())
+    }
+
+    private func perform(_ action: ToolbarAction) {
+        hover(action, isHovering: false)
+        switch action {
+        case .actionPanel, .browseNotes: break
+        case .createNote: store.create()
+        }
+    }
+
+    /// Shows the tooltip after a short delay; once visible, it follows the pointer between buttons instantly.
+    private func hover(_ action: ToolbarAction, isHovering: Bool) {
+        hoverTask?.cancel()
+        if isHovering, tooltip != nil {
+            tooltip = action
+            return
+        }
+        hoverTask = Task {
+            try? await Task.sleep(for: .milliseconds(isHovering ? 450 : 120))
+            guard !Task.isCancelled else { return }
+            withAnimation(.snappy(duration: 0.18)) { tooltip = isHovering ? action : nil }
+        }
+    }
+}
+
+private struct Tooltip: View {
+    let action: ToolbarAction
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(action.rawValue)
+                .font(.callout.weight(.medium))
+            HStack(spacing: 3) {
+                ForEach(["⌘", action.key.uppercased()], id: \.self) { key in
+                    Text(key)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(.fill.secondary, in: .rect(cornerRadius: 5))
+                }
+            }
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .glassEffect(.regular, in: .capsule)
+        .fixedSize()
     }
 }
 
