@@ -3,6 +3,18 @@ import AppKit
 extension NSAttributedString.Key {
     /// Markdown syntax that is hidden unless the caret is on its line.
     static let markdownMarker = NSAttributedString.Key("FloatnoteMarkdownMarker")
+    /// List marker (`-`, `*`, `+`) drawn as a bullet.
+    static let markdownBullet = NSAttributedString.Key("FloatnoteMarkdownBullet")
+    /// `[ ]` / `[x]` drawn as a checkbox; the value is whether it is checked.
+    static let markdownCheckbox = NSAttributedString.Key("FloatnoteMarkdownCheckbox")
+    /// Inline code drawn with a rounded background.
+    static let markdownInlineCode = NSAttributedString.Key("FloatnoteMarkdownInlineCode")
+    /// Block decoration drawn behind the text.
+    static let markdownBlock = NSAttributedString.Key("FloatnoteMarkdownBlock")
+}
+
+enum MarkdownBlock: String {
+    case code, quote, rule
 }
 
 /// Styles Markdown source in place so the editor reads like rendered text.
@@ -10,11 +22,19 @@ extension NSAttributedString.Key {
 enum MarkdownStyler {
     static let baseFont = NSFont.systemFont(ofSize: 14)
     static let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    static let tabWidth: CGFloat = 24
 
     static var baseAttributes: [NSAttributedString.Key: Any] {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3
-        return [.font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
+        [.font: baseFont, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraphStyle()]
+    }
+
+    private static func paragraphStyle(_ configure: (NSMutableParagraphStyle) -> Void = { _ in }) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 3
+        style.tabStops = []
+        style.defaultTabInterval = tabWidth
+        configure(style)
+        return style
     }
 
     private static func regex(_ pattern: String) -> NSRegularExpression {
@@ -27,22 +47,24 @@ enum MarkdownStyler {
     private static let strike = regex(#"(~~)(?=\S)(.+?)(?<=\S)(~~)"#)
     private static let codeSpan = regex(#"(`)([^`\n]+)(`)"#)
     private static let link = regex(#"(\[)([^\]\n]+)(\]\(([^)\s]+)\))"#)
-    private static let listMarker = regex(#"^[ \t]*(?:[-*+]|\d+[.)])(?=[ \t])"#)
-    private static let task = regex(#"^[ \t]*[-*+][ \t]+(\[[ xX]\])[ \t]+(.*)$"#)
+    private static let listItem = regex(#"^([ \t]*)([-*+]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$"#)
     private static let quote = regex(#"^[ \t]*(>[ \t]?)(.*)$"#)
     private static let rule = regex(#"^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$"#)
-    private static let codeBlock = regex(#"^```[^\n]*\n[\s\S]*?^```[^\n]*$"#)
+    private static let codeBlock = regex(#"^(```[^\n]*)\n([\s\S]*?)\n?^(```)[ \t]*$"#)
 
     static func style(_ storage: NSTextStorage) {
-        let string = storage.string
+        let string = storage.string as NSString
         let full = NSRange(location: 0, length: storage.length)
         func matches(_ regex: NSRegularExpression) -> [NSTextCheckingResult] {
-            regex.matches(in: string, range: full)
+            regex.matches(in: storage.string, range: full)
         }
         func hide(_ ranges: NSRange...) {
-            for range in ranges {
+            for range in ranges where range.location != NSNotFound {
                 storage.addAttributes([.markdownMarker: true, .foregroundColor: NSColor.tertiaryLabelColor], range: range)
             }
+        }
+        func width(_ text: String) -> CGFloat {
+            NSAttributedString(string: text, attributes: baseAttributes).size().width
         }
 
         storage.beginEditing()
@@ -51,9 +73,13 @@ enum MarkdownStyler {
         for m in matches(heading) {
             let level = m.range(at: 1).length - 1
             let size: CGFloat = [26, 21, 18, 16, 15, 14][min(level, 6) - 1]
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.paragraphSpacingBefore = 6
-            storage.addAttributes([.font: NSFont.systemFont(ofSize: size, weight: .bold), .paragraphStyle: paragraph], range: m.range)
+            storage.addAttributes([
+                .font: NSFont.systemFont(ofSize: size, weight: .bold),
+                .paragraphStyle: paragraphStyle {
+                    $0.paragraphSpacingBefore = level <= 2 ? 12 : 8
+                    $0.paragraphSpacing = 4
+                },
+            ], range: m.range)
             hide(m.range(at: 1))
         }
         for m in matches(bold) {
@@ -69,40 +95,77 @@ enum MarkdownStyler {
             hide(m.range(at: 1), m.range(at: 3))
         }
         for m in matches(codeSpan) {
-            storage.addAttributes([.font: monoFont, .backgroundColor: NSColor.quaternarySystemFill], range: m.range(at: 2))
+            storage.addAttributes([.font: monoFont, .markdownInlineCode: true], range: m.range(at: 2))
             hide(m.range(at: 1), m.range(at: 3))
         }
         for m in matches(link) {
-            let url = (string as NSString).substring(with: m.range(at: 4))
-            if let url = URL(string: url) { storage.addAttribute(.link, value: url, range: m.range(at: 2)) }
+            if let url = URL(string: string.substring(with: m.range(at: 4))) {
+                storage.addAttributes([.link: url, .foregroundColor: NSColor.controlAccentColor], range: m.range(at: 2))
+            }
             hide(m.range(at: 1), m.range(at: 3))
         }
-        for m in matches(listMarker) {
-            storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: m.range)
-        }
-        for m in matches(task) {
-            let box = m.range(at: 1)
-            storage.addAttribute(.link, value: URL(string: "task:\(box.location)")!, range: box)
-            if (string as NSString).substring(with: box) != "[ ]" {
+        for m in matches(listItem) {
+            let indent = string.substring(with: m.range(at: 1))
+            let marker = m.range(at: 2)
+            let box = m.range(at: 4)
+            let isBullet = "-*+".contains(string.substring(with: marker))
+            var visiblePrefix = indent + string.substring(with: NSRange(location: marker.location, length: NSMaxRange(m.range(at: 3)) - marker.location))
+
+            if isBullet, box.location != NSNotFound {
+                // Task: the dash is syntax, the box is drawn as a checkbox.
+                let checkbox = NSRange(location: box.location, length: 3)
+                let done = string.substring(with: checkbox) != "[ ]"
+                hide(NSRange(location: marker.location, length: box.location - marker.location))
                 storage.addAttributes([
-                    .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ], range: m.range(at: 2))
+                    .markdownCheckbox: done,
+                    .foregroundColor: NSColor.clear,
+                    .link: URL(string: "task:\(checkbox.location)")!,
+                ], range: checkbox)
+                if done {
+                    storage.addAttributes([
+                        .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                        .foregroundColor: NSColor.secondaryLabelColor,
+                    ], range: m.range(at: 5))
+                }
+                visiblePrefix = indent + string.substring(with: box)
+            } else {
+                storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: marker)
+                if isBullet { storage.addAttribute(.markdownBullet, value: true, range: marker) }
             }
+            let hangingIndent = width(visiblePrefix)
+            storage.addAttribute(.paragraphStyle, value: paragraphStyle { $0.headIndent = hangingIndent }, range: m.range)
         }
         for m in matches(quote) {
-            storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: m.range(at: 1))
-            storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: m.range(at: 2))
-            addTrait(.italicFontMask, to: storage, in: m.range(at: 2))
+            hide(m.range(at: 1))
+            storage.addAttributes([
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .markdownBlock: MarkdownBlock.quote.rawValue,
+                .paragraphStyle: paragraphStyle {
+                    $0.firstLineHeadIndent = 14
+                    $0.headIndent = 14
+                },
+            ], range: string.lineRange(for: m.range)) // Include the newline so consecutive lines share one bar.
         }
         for m in matches(rule) {
-            storage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: m.range)
+            hide(m.range)
+            storage.addAttribute(.markdownBlock, value: MarkdownBlock.rule.rawValue, range: m.range)
         }
         for m in matches(codeBlock) {
             var attributes = baseAttributes
             attributes[.font] = monoFont
-            attributes[.backgroundColor] = NSColor.quaternarySystemFill
+            attributes[.markdownBlock] = MarkdownBlock.code.rawValue
+            attributes[.paragraphStyle] = paragraphStyle {
+                $0.firstLineHeadIndent = 12
+                $0.headIndent = 12
+                $0.tailIndent = -12
+            }
             storage.setAttributes(attributes, range: m.range)
+            for fence in [m.range(at: 1), m.range(at: 3)] {
+                storage.addAttributes([
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: NSColor.tertiaryLabelColor,
+                ], range: fence)
+            }
         }
         storage.endEditing()
     }
