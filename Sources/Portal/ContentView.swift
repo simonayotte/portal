@@ -30,6 +30,8 @@ private enum Palette {
 
 struct ContentView: View {
     @Bindable var store: NoteStore
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appearsActive) private var appearsActive
     @State private var tooltip: ToolbarAction?
     @State private var hoverTask: Task<Void, Never>?
     @State private var palette: Palette?
@@ -44,11 +46,12 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 280, minHeight: 220)
-        .containerBackground(for: .window) {
-            // A light blur under a mostly opaque paper color: bright and calm, with a hint of what is behind.
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .overlay(Color(nsColor: .textBackgroundColor).opacity(0.7))
+        .background {
+            WindowBackground()
+                .overlay(
+                    colorScheme == .dark ? Color.black.opacity(0.2) : Color.white.opacity(0.35)
+                )
+                .ignoresSafeArea()
         }
         .windowMinimizeBehavior(.disabled)
         .windowFullScreenBehavior(.disabled)
@@ -108,8 +111,8 @@ struct ContentView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             Text(store.selected?.title ?? "Untitled")
-                .font(.headline)
-                .foregroundStyle(.secondary)
+                .font(.headline.weight(.regular))
+                .foregroundStyle(appearsActive ? .secondary : .tertiary)
                 .lineLimit(1)
         }
         .sharedBackgroundVisibility(.hidden)

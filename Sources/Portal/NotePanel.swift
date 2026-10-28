@@ -15,6 +15,9 @@ final class NotePanel: NSPanel {
         )
         title = "Portal"
         level = .floating
+        isOpaque = false
+        backgroundColor = .clear
+        titlebarAppearsTransparent = true
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -25,7 +28,38 @@ final class NotePanel: NSPanel {
         controller.sceneBridgingOptions = .all
         contentViewController = controller
         standardWindowButton(.zoomButton)?.isEnabled = false
+        setTrafficLightsHidden(true)
         center()
         setFrameAutosaveName("PortalNote")
     }
+
+    override func becomeKey() {
+        super.becomeKey()
+        setTrafficLightsHidden(false)
+    }
+
+    override func resignKey() {
+        super.resignKey()
+        setTrafficLightsHidden(true)
+    }
+
+    private func setTrafficLightsHidden(_ hidden: Bool) {
+        let buttons: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        for button in buttons {
+            standardWindowButton(button)?.isHidden = hidden
+        }
+    }
+}
+
+/// Native behind-window blur, kept active even while Portal leaves the other app active.
+struct WindowBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .hudWindow
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
