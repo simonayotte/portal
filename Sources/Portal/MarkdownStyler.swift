@@ -46,6 +46,9 @@ enum MarkdownStyler {
     private static let italic = regex(#"(?<![*_\w])([*_])(?=[^\s*_])(.+?)(?<=[^\s*_])(\1)(?![*_\w])"#)
     private static let strike = regex(#"(~~)(?=\S)(.+?)(?<=\S)(~~)"#)
     private static let codeSpan = regex(#"(`)([^`\n]+)(`)"#)
+    static let wikilinkScheme = "portal-wikilink"
+    private static let wikilink = regex(#"(!?\[\[)([^\]|\n]+)(\|[^\]\n]*)?(\]\])"#)
+    private static let frontmatter = regex(#"\A---\n[\s\S]*?\n---[ \t]*$"#)
     private static let link = regex(#"(\[)([^\]\n]+)(\]\(([^)\s]+)\))"#)
     private static let listItem = regex(#"^([ \t]*)([-*+]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$"#)
     private static let quote = regex(#"^[ \t]*(>[ \t]?)(.*)$"#)
@@ -97,6 +100,19 @@ enum MarkdownStyler {
         for m in matches(codeSpan) {
             storage.addAttributes([.font: monoFont, .markdownInlineCode: true], range: m.range(at: 2))
             hide(m.range(at: 1), m.range(at: 3))
+        }
+        for m in matches(wikilink) {
+            let target = string.substring(with: m.range(at: 2))
+            var url = URLComponents()
+            url.scheme = wikilinkScheme
+            url.path = "open"
+            url.queryItems = [URLQueryItem(name: "target", value: target)]
+            guard let link = url.url else { continue }
+            let alias = m.range(at: 3)
+            // `[[target|alias]]` shows only the alias.
+            let shown = alias.location == NSNotFound ? m.range(at: 2) : NSRange(location: alias.location + 1, length: alias.length - 1)
+            storage.addAttributes([.link: link, .foregroundColor: NSColor.controlAccentColor], range: shown)
+            hide(NSRange(location: m.range.location, length: shown.location - m.range.location), m.range(at: 4))
         }
         for m in matches(link) {
             if let url = URL(string: string.substring(with: m.range(at: 4))) {
@@ -166,6 +182,12 @@ enum MarkdownStyler {
                     .foregroundColor: NSColor.tertiaryLabelColor,
                 ], range: fence)
             }
+        }
+        for m in matches(frontmatter) {
+            var attributes = baseAttributes
+            attributes[.font] = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            attributes[.foregroundColor] = NSColor.secondaryLabelColor
+            storage.setAttributes(attributes, range: m.range)
         }
         storage.endEditing()
     }

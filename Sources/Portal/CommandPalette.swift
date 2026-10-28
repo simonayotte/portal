@@ -26,7 +26,9 @@ struct CommandPalette: View {
 
     private var results: [PaletteItem] {
         let query = query.trimmingCharacters(in: .whitespaces)
-        return query.isEmpty ? items : items.filter { $0.title.localizedCaseInsensitiveContains(query) }
+        return query.isEmpty ? items : items.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.detail?.localizedCaseInsensitiveContains(query) == true
+        }
     }
 
     var body: some View {
@@ -57,7 +59,7 @@ struct CommandPalette: View {
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: Self.rowSpacing) {
+                LazyVStack(spacing: Self.rowSpacing) {
                     ForEach(results) { item in
                         PaletteRow(item: item, isSelected: item.id == selection)
                             .id(item.id)

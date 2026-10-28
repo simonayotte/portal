@@ -3,7 +3,11 @@ import AppKit
 /// Gives SwiftUI a handle on the editor: focus it and run formatting actions on it.
 @MainActor
 final class EditorController {
-    weak var textView: MarkdownTextView?
+    weak var textView: MarkdownTextView? {
+        didSet { textView?.openLink = { [weak self] in self?.openLink?($0) } }
+    }
+    /// Opens the note a clicked `[[wikilink]]` points to.
+    var openLink: ((String) -> Void)?
 
     func focus() {
         textView?.window?.makeFirstResponder(textView)

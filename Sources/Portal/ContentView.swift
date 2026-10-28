@@ -37,6 +37,22 @@ struct ContentView: View {
     @State private var editor = EditorController()
 
     var body: some View {
+        Group {
+            if store.vault == nil {
+                NoVaultView(openVault: chooseVault)
+            } else {
+                editorView
+            }
+        }
+        .frame(minWidth: 280, minHeight: 220)
+        .containerBackground(.thickMaterial, for: .window)
+        .toolbar(removing: .title)
+        .toolbar { toolbarContent }
+        .background(FloatingWindowConfigurator())
+        .onAppear { editor.openLink = { store.open(link: $0) } }
+    }
+
+    private var editorView: some View {
         MarkdownEditor(text: $store.text, vimMode: $vimMode, controller: editor)
             .overlay(alignment: .topLeading) {
                 if store.text.isEmpty {
@@ -76,34 +92,43 @@ struct ContentView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                 }
             }
-            .frame(minWidth: 280, minHeight: 220)
-            .containerBackground(.thickMaterial, for: .window)
-            .toolbar(removing: .title)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text(store.selected?.title ?? "Untitled")
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .sharedBackgroundVisibility(.hidden)
-                ToolbarItem(placement: .primaryAction) {
-                    HStack(spacing: 2) {
-                        ForEach(ToolbarAction.allCases) { action in
-                        Button { perform(action) } label: {
-                            Image(systemName: action.symbol)
-                                .font(.system(size: 16))
-                        }
-                        .buttonStyle(ToolbarIconButtonStyle())
-                        .accessibilityLabel(action.rawValue)
-                        .keyboardShortcut(KeyEquivalent(action.key))
-                        .onHover { hover(action, isHovering: $0) }
-                        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Text(store.selected?.title ?? "Untitled")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .sharedBackgroundVisibility(.hidden)
+        ToolbarItem(placement: .primaryAction) {
+            HStack(spacing: 2) {
+                ForEach(ToolbarAction.allCases) { action in
+                    Button { perform(action) } label: {
+                        Image(systemName: action.symbol)
+                            .font(.system(size: 16))
                     }
+                    .buttonStyle(ToolbarIconButtonStyle())
+                    .accessibilityLabel(action.rawValue)
+                    .keyboardShortcut(KeyEquivalent(action.key))
+                    .onHover { hover(action, isHovering: $0) }
                 }
-                .sharedBackgroundVisibility(.hidden)
             }
-            .background(FloatingWindowConfigurator())
+        }
+        .sharedBackgroundVisibility(.hidden)
+    }
+
+    private func chooseVault() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Open Vault"
+        panel.message = "Choose an Obsidian vault folder"
+        panel.directoryURL = store.vault ?? FileManager.default.homeDirectoryForCurrentUser
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.open(vault: url)
     }
 
     private func perform(_ action: ToolbarAction) {
@@ -117,6 +142,8 @@ struct ContentView: View {
 
     private func togglePalette(_ target: Palette) {
         if palette == target { return closePalette() }
+        guard store.vault != nil else { return }
+        if target == .notes { store.refresh() }
         withAnimation(.snappy(duration: 0.18)) { palette = target }
     }
 
@@ -132,19 +159,17 @@ struct ContentView: View {
                 prompt: "Search actions...",
                 items: MarkdownAction.all.map { action in
                     PaletteItem(id: action.id, title: action.title, shortcut: action.shortcut) { editor.perform(action) }
-                },
+                } + [PaletteItem(id: "open-vault", title: "Open Vault…", perform: chooseVault)],
                 actionLabel: "Run Action",
                 dismiss: closePalette
             )
         case .notes:
             CommandPalette(
                 prompt: "Search notes...",
-                items: store.notes.sorted { $0.modified > $1.modified }.map { note in
-                    PaletteItem(
-                        id: note.id.absoluteString,
-                        title: note.title,
-                        detail: note.modified.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
-                    ) { store.select(note.id) }
+                items: store.notes.map { note in
+                    PaletteItem(id: note.id.absoluteString, title: note.title, detail: store.folder(of: note)) {
+                        store.select(note.id)
+                    }
                 },
                 actionLabel: "Open Note",
                 dismiss: closePalette
@@ -213,6 +238,24 @@ private struct Tooltip: View {
         .padding(.vertical, 6)
         .glassEffect(.regular, in: .capsule)
         .fixedSize()
+    }
+}
+
+private struct NoVaultView: View {
+    let openVault: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "folder")
+                .font(.system(size: 28))
+                .foregroundStyle(.tertiary)
+            Text("No vault open")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Button("Open Vault…", action: openVault)
+                .buttonStyle(.glass)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

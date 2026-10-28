@@ -63,8 +63,13 @@ struct MarkdownEditor: NSViewRepresentable {
             textView?.updateActiveLine()
         }
 
-        /// Toggles `- [ ]` / `- [x]` when a checkbox is clicked.
+        /// Toggles `- [ ]` / `- [x]` when a checkbox is clicked, and follows `[[wikilinks]]`.
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            if let url = link as? URL, url.scheme == MarkdownStyler.wikilinkScheme,
+               let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value {
+                (textView as? MarkdownTextView)?.openLink?(target)
+                return true
+            }
             guard let url = link as? URL, url.scheme == "task",
                   let location = Int(url.absoluteString.dropFirst("task:".count)),
                   let textView = textView as? MarkdownTextView else { return false }
@@ -79,6 +84,7 @@ struct MarkdownEditor: NSViewRepresentable {
 /// TextKit 1 text view with Markdown editing behaviors: Vim keys, list continuation, list indenting and shortcuts.
 final class MarkdownTextView: NSTextView {
     lazy var vim = VimEngine(view: self)
+    var openLink: ((String) -> Void)?
 
     private static let listPrefix = try! NSRegularExpression(
         pattern: #"^([ \t]*)(?:([-*+])[ \t]+(\[[ xX]\][ \t]+)?|(\d+)([.)])[ \t]+|(>)[ \t]?)"#

@@ -18,7 +18,11 @@ struct PortalApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = NoteStore()
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        store.refresh()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        store.flush()
+        store.leaveCurrentNote()
     }
 }
