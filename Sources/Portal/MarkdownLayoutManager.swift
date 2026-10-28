@@ -114,7 +114,8 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         shouldUse action: NSLayoutManager.ControlCharacterAction,
         forControlCharacterAt charIndex: Int
     ) -> NSLayoutManager.ControlCharacterAction {
-        isHiddenMarker(at: charIndex) ? .zeroAdvancement : action
+        guard isHiddenMarker(at: charIndex) else { return action }
+        return textStorage?.attribute(.markdownTab, at: charIndex, effectiveRange: nil) != nil ? .horizontalTab : .zeroAdvancement
     }
 
     /// Makes room for embedded images below their line, and collapses empty front matter
@@ -171,6 +172,24 @@ final class MarkdownLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
                 NSRect(x: left, y: rect.midY.rounded(), width: width, height: 1).fill()
             case .rule:
                 break
+            }
+        }
+
+        storage.enumerateAttribute(.markdownTableRow, in: characters) { value, range, _ in
+            // On the active line the row shows its Markdown source instead.
+            guard let row = value as? TableRow, !isActive(range.location) else { return }
+            let rect = lineFragmentsRect(for: range).offsetBy(dx: 0, dy: origin.y)
+            let table = NSRect(x: left, y: rect.minY, width: row.edges.last ?? 0, height: rect.height)
+            if row.isHeader {
+                NSColor.quaternarySystemFill.setFill()
+                table.fill()
+            }
+            NSColor.separatorColor.setFill()
+            // Each row draws its bottom edge, and its top one unless the row above already did.
+            if row.isHeader || isActive(range.location - 1) { NSRect(x: table.minX, y: table.minY, width: table.width, height: 1).fill() }
+            NSRect(x: table.minX, y: table.maxY - 1, width: table.width, height: 1).fill()
+            for edge in row.edges {
+                NSRect(x: left + min(edge, table.width - 1), y: table.minY, width: 1, height: table.height).fill()
             }
         }
 

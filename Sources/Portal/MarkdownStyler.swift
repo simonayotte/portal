@@ -15,6 +15,10 @@ extension NSAttributedString.Key {
     static let markdownImage = NSAttributedString.Key("PortalMarkdownImage")
     /// Block decoration drawn behind the text.
     static let markdownBlock = NSAttributedString.Key("PortalMarkdownBlock")
+    /// Hidden syntax that advances to the next tab stop instead (table pipes).
+    static let markdownTab = NSAttributedString.Key("PortalMarkdownTab")
+    /// A table row drawn in a grid; the value is a `TableRow`.
+    static let markdownTableRow = NSAttributedString.Key("PortalMarkdownTableRow")
 }
 
 enum MarkdownBlock: String {
@@ -35,6 +39,17 @@ final class ImageEmbed: NSObject {
     }
 
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp", "svg"]
+}
+
+/// A table row's grid: column edges from the left of the text, and whether it is the header.
+final class TableRow: NSObject {
+    let edges: [CGFloat]
+    let isHeader: Bool
+
+    init(edges: [CGFloat], isHeader: Bool) {
+        self.edges = edges
+        self.isHeader = isHeader
+    }
 }
 
 /// Styles Markdown source in place so the editor reads like rendered text.
@@ -85,6 +100,8 @@ enum MarkdownStyler {
     private static let listItem = regex(#"^([ \t]*)([-*+]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$"#)
     private static let quote = regex(#"^[ \t]*(>[ \t]?)(.*)$"#)
     private static let rule = regex(#"^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$"#)
+    private static let table = regex(#"^.*\|.*\n(?=.*\|)[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*(?:\n.*\|.*)*$"#)
+    private static let tableCellPadding: CGFloat = 10
     private static let codeBlock = regex(#"^(```[^\n]*)\n([\s\S]*?)\n?^(```)[ \t]*$"#)
 
     static func style(_ storage: NSTextStorage) {
@@ -174,6 +191,9 @@ enum MarkdownStyler {
             storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: m.range(at: isWikilink ? 1 : 4))
             storage.addAttribute(.markdownImage, value: ImageEmbed(source: source, isWikilink: isWikilink, width: width), range: m.range)
         }
+        for m in matches(table) {
+            styleTable(m.range, in: storage) { hide($0) }
+        }
         for m in matches(listItem) {
             let indent = string.substring(with: m.range(at: 1))
             let marker = m.range(at: 2)
@@ -253,6 +273,107 @@ enum MarkdownStyler {
             storage.setAttributes(attributes, range: m.range)
         }
         storage.endEditing()
+    }
+
+    /// Lines a table up in columns: off the active line its pipes act as tabs to stops past each column's widest cell.
+    private static func styleTable(_ range: NSRange, in storage: NSTextStorage, hide: (NSRange) -> Void) {
+        let string = storage.string as NSString
+        var lines: [NSRange] = []
+        string.enumerateSubstrings(in: range, options: [.byLines, .substringNotRequired]) { _, line, _, _ in lines.append(line) }
+
+        /// Splits a row at its unescaped pipes outside code spans into cell ranges, plus its leading and trailing pipe.
+        func split(_ line: NSRange) -> (cells: [NSRange], leading: NSRange?, trailing: NSRange?) {
+            var pipes: [Int] = []
+            var inCode = false
+            var index = line.location
+            while index < NSMaxRange(line) {
+                switch string.character(at: index) {
+                case 92: index += 1 // `\|`
+                case 96: inCode.toggle()
+                case 124 where !inCode: pipes.append(index)
+                default: break
+                }
+                index += 1
+            }
+            let blank = { (r: NSRange) in string.substring(with: r).allSatisfy(\.isWhitespace) }
+            let leading = pipes.first.flatMap { blank(NSRange(location: line.location, length: $0 - line.location)) ? $0 : nil }
+            let trailing = pipes.last.flatMap { $0 != leading && blank(NSRange(location: $0 + 1, length: NSMaxRange(line) - $0 - 1)) ? $0 : nil }
+            var start = leading.map { $0 + 1 } ?? line.location
+            var cells: [NSRange] = []
+            for pipe in pipes.filter({ $0 != leading && $0 != trailing }) + [trailing ?? NSMaxRange(line)] {
+                cells.append(NSRange(location: start, length: pipe - start))
+                start = pipe + 1
+            }
+            return (cells, leading.map { NSRange(location: line.location, length: $0 + 1 - line.location) },
+                    trailing.map { NSRange(location: $0, length: NSMaxRange(line) - $0) })
+        }
+        func trimmed(_ cell: NSRange) -> NSRange {
+            let text = string.substring(with: cell)
+            let leading = text.prefix { $0.isWhitespace }.utf16.count
+            let trailing = text.reversed().prefix { $0.isWhitespace }.count
+            return NSRange(location: cell.location + leading, length: max(0, cell.length - leading - trailing))
+        }
+        /// The cell's width as shown off the active line, without its hidden syntax.
+        func width(_ cell: NSRange) -> CGFloat {
+            let shown = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: cell))
+            shown.enumerateAttribute(.markdownMarker, in: NSRange(location: 0, length: shown.length), options: .reverse) { value, range, _ in
+                if value != nil { shown.deleteCharacters(in: range) }
+            }
+            return ceil(shown.size().width)
+        }
+
+        let alignments: [NSTextAlignment] = split(lines[1]).cells.map {
+            let spec = string.substring(with: trimmed($0))
+            return spec.hasSuffix(":") ? (spec.hasPrefix(":") ? .center : .right) : .left
+        }
+        hide(lines[1])
+        storage.addAttribute(.markdownCollapsed, value: true, range: lines[1])
+
+        let rows = lines.enumerated().filter { $0.offset != 1 }.map { (line: $0.element, isHeader: $0.offset == 0, split: split($0.element)) }
+        for row in rows where row.isHeader {
+            for cell in row.split.cells { addTrait(.boldFontMask, to: storage, in: trimmed(cell)) }
+        }
+        var widths: [CGFloat] = []
+        for row in rows {
+            for (column, cell) in row.split.cells.enumerated() {
+                let cellWidth = width(trimmed(cell))
+                if column < widths.count { widths[column] = max(widths[column], cellWidth) } else { widths.append(cellWidth) }
+            }
+        }
+        let padding = tableCellPadding
+        let edges = widths.reduce(into: [CGFloat(0)]) { $0.append($0.last! + $1 + padding * 2) }
+        let tabs = widths.indices.map { column in
+            let alignment = column < alignments.count ? alignments[column] : .left
+            let offset = alignment == .center ? widths[column] / 2 : alignment == .right ? widths[column] : 0
+            return NSTextTab(textAlignment: alignment, location: edges[column] + padding + offset)
+        }
+
+        for row in rows {
+            let (cells, leading, trailing) = row.split
+            for (column, cell) in cells.enumerated() {
+                let content = trimmed(cell)
+                hide(NSRange(location: cell.location, length: content.location - cell.location))
+                hide(NSRange(location: NSMaxRange(content), length: NSMaxRange(cell) - NSMaxRange(content)))
+                // The pipe before each cell after the first moves on to that cell's column.
+                if column > 0 { storage.addAttribute(.markdownTab, value: true, range: NSRange(location: cell.location - 1, length: 1)) }
+            }
+            if let leading {
+                hide(leading)
+                storage.addAttribute(.markdownTab, value: true, range: NSRange(location: NSMaxRange(leading) - 1, length: 1))
+            }
+            if let trailing { hide(trailing) }
+            for column in cells.indices.dropFirst() { hide(NSRange(location: cells[column].location - 1, length: 1)) }
+            storage.addAttributes([
+                .markdownTableRow: TableRow(edges: edges, isHeader: row.isHeader),
+                .paragraphStyle: paragraphStyle {
+                    $0.lineSpacing = 0
+                    $0.paragraphSpacingBefore = 5
+                    $0.paragraphSpacing = 5
+                    $0.tabStops = tabs
+                    $0.firstLineHeadIndent = leading == nil ? padding : 0
+                },
+            ], range: row.line)
+        }
     }
 
     private static func addTrait(_ trait: NSFontTraitMask, to storage: NSTextStorage, in range: NSRange) {
