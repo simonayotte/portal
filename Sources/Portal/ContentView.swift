@@ -48,13 +48,19 @@ struct ContentView: View {
             // A light blur under a mostly opaque paper color: bright and calm, with a hint of what is behind.
             Rectangle()
                 .fill(.ultraThinMaterial)
-                .overlay(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                .overlay(Color(nsColor: .textBackgroundColor).opacity(0.7))
         }
         .windowMinimizeBehavior(.disabled)
         .windowFullScreenBehavior(.disabled)
         .toolbar(removing: .title)
         .toolbar { toolbarContent }
         .background(FloatingWindowConfigurator())
+        .background {
+            Button("Open Daily Note") { store.openDailyNote() }
+                .keyboardShortcut("d")
+                .opacity(0)
+                .allowsHitTesting(false)
+        }
         .onAppear {
             editor.openLink = { store.open(link: $0) }
             editor.saveImage = { store.saveImage($0, fileExtension: $1) }
@@ -165,7 +171,7 @@ struct ContentView: View {
                 items: MarkdownAction.all.map { action in
                     PaletteItem(id: action.id, title: action.title, shortcut: action.shortcut) { editor.perform(action) }
                 } + [
-                    PaletteItem(id: "daily-note", title: "Open Daily Note") { store.openDailyNote() },
+                    PaletteItem(id: "daily-note", title: "Open Daily Note", shortcut: "⌘D") { store.openDailyNote() },
                     PaletteItem(id: "open-vault", title: "Open Vault…", perform: chooseVault),
                 ],
                 actionLabel: "Run Action",
