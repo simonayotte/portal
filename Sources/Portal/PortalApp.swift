@@ -6,35 +6,24 @@ struct PortalApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 
     var body: some Scene {
-        Window("Portal", id: "note") {
-            NoteWindow(appDelegate: appDelegate)
-        }
-        .windowLevel(.floating)
-        .windowToolbarStyle(.unified)
-        .defaultSize(width: 400, height: 700)
-    }
-}
-
-/// Hands the scene's `openWindow` action to the app delegate so the menu bar item can reopen a closed note.
-private struct NoteWindow: View {
-    let appDelegate: AppDelegate
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        ContentView(store: appDelegate.store)
-            .onAppear { appDelegate.openNote = { openWindow(id: "note") } }
+        Settings { EmptyView() }
     }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let store = NoteStore()
-    var openNote: (() -> Void)?
+    private lazy var notePanel: NotePanel = {
+        let panel = NotePanel(rootView: ContentView(store: store))
+        panel.delegate = self
+        return panel
+    }()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private lazy var hotKey = GlobalHotKey { [unowned self] in toggleNote() }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        notePanel.makeKeyAndOrderFront(nil)
         guard let button = statusItem.button else { return }
         button.image = NSImage(systemSymbolName: "app.background.dotted", accessibilityDescription: "Portal")
         button.target = self
@@ -47,7 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    func applicationDidBecomeActive(_ notification: Notification) {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        notePanel.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
         store.refresh()
     }
 
@@ -65,15 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
-    /// Hides Portal when any of its windows is on screen, otherwise brings the note forward and focuses it.
+    /// Toggles the note without deactivating the app behind it.
     private func toggleNote() {
-        let isShowing = !NSApp.isHidden && NSApp.windows.contains { $0.isVisible && $0.styleMask.contains(.titled) }
-        if isShowing {
-            NSApp.hide(nil)
+        if notePanel.isVisible {
+            notePanel.orderOut(nil)
         } else {
-            NSApp.unhide(nil)
-            NSApp.activate()
-            openNote?()
+            notePanel.makeKeyAndOrderFront(nil)
         }
     }
 

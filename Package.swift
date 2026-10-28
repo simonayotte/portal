@@ -5,6 +5,7 @@ let package = Package(
     name: "Portal",
     platforms: [.macOS(.v27)],
     targets: [
-        .executableTarget(name: "Portal")
+        .executableTarget(name: "Portal"),
+        .testTarget(name: "PortalTests", dependencies: ["Portal"])
     ]
 )
