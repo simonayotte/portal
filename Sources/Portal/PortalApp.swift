@@ -47,9 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.refresh()
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard store.leaveCurrentNote() else {
+            notePanel.makeKeyAndOrderFront(nil)
+            return .terminateCancel
+        }
+        return .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         SettingsAccess.shared.removeShortcut()
-        store.leaveCurrentNote()
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {

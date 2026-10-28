@@ -45,6 +45,9 @@ struct ContentView: View {
                 editorView
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            NoteRecoveryView(store: store)
+        }
         .frame(minWidth: 280, minHeight: 220)
         .background { SettingsActionBridge() }
         .background {
@@ -76,9 +79,16 @@ struct ContentView: View {
     }
 
     private var editorView: some View {
-        MarkdownEditor(text: $store.text, noteID: store.selectedID, controller: editor)
+        Group {
+            if store.canEdit {
+                MarkdownEditor(text: $store.text, noteID: store.selectedID, controller: editor)
+            } else {
+                ContentUnavailableView("Note unavailable", systemImage: "doc.text",
+                                       description: Text("Retry reading the note or open another note."))
+            }
+        }
             .overlay(alignment: .topLeading) {
-                if store.text.isEmpty {
+                if store.canEdit && store.text.isEmpty {
                     Text("Start writing...")
                         .font(.system(size: 14))
                         .foregroundStyle(.tertiary)

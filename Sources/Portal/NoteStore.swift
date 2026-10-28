@@ -19,8 +19,12 @@ final class NoteStore {
     private(set) var selectedID: URL?
     private var content = ""
 
-    @ObservationIgnored private var isDirty = false
-    @ObservationIgnored private var loadedModified: Date?
+    private(set) var isDirty = false
+    private(set) var canEdit = false
+    private(set) var issue: NoteIssue?
+    @ObservationIgnored private var baseline: Data?
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var retryAction: (() -> Void)?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     /// Image files in the vault by lowercased file name, for `![[image.png]]` embeds.
     @ObservationIgnored private var imageFiles: [String: URL] = [:]
@@ -32,8 +36,10 @@ final class NoteStore {
     private static let vaultKey = "vaultPath"
     private static let lastNoteKey = "lastNotePath"
 
-    init() {
-        let saved = UserDefaults.standard.string(forKey: Self.vaultKey).map { URL(filePath: $0, directoryHint: .isDirectory) }
+    init(defaults: UserDefaults = .standard, restoreVault: Bool = true) {
+        self.defaults = defaults
+        guard restoreVault else { return }
+        let saved = defaults.string(forKey: Self.vaultKey).map { URL(filePath: $0, directoryHint: .isDirectory) }
         if let vault = saved.flatMap({ FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }) ?? Obsidian.openVault() {
             open(vault: vault)
         }
@@ -45,7 +51,7 @@ final class NoteStore {
     var text: String {
         get { content }
         set {
-            guard newValue != content else { return }
+            guard canEdit, newValue != content else { return }
             content = newValue
             scheduleSave()
         }
@@ -62,12 +68,24 @@ final class NoteStore {
     // MARK: Vault
 
     func open(vault url: URL) {
-        leaveCurrentNote()
+        guard leaveCurrentNote() else { return }
+        let scanned: (notes: [Note], images: [String: URL])
+        do {
+            scanned = try scan(url)
+        } catch {
+            report(error, at: url, kind: .read) { [weak self] in self?.open(vault: url) }
+            return
+        }
         vault = url.standardizedFileURL
         selectedID = nil
-        UserDefaults.standard.set(url.path, forKey: Self.vaultKey)
-        refresh()
-        let last = UserDefaults.standard.string(forKey: Self.lastNoteKey).map { URL(filePath: $0).standardizedFileURL }
+        content = ""
+        baseline = nil
+        canEdit = false
+        notes = scanned.notes
+        imageFiles = scanned.images
+        createdHere.removeAll()
+        defaults.set(url.path, forKey: Self.vaultKey)
+        let last = defaults.string(forKey: Self.lastNoteKey).map { URL(filePath: $0).standardizedFileURL }
         if let last, notes.contains(where: { $0.id == last }) {
             load(last)
         } else if let recent = notes.first {
@@ -78,25 +96,35 @@ final class NoteStore {
     }
 
     /// Rescans the vault and reloads the open note if it changed on disk (e.g. edited in Obsidian).
-    func refresh() {
-        guard let vault else { return }
-        let scanned = scan(vault)
-        var found = scanned.notes
-        imageFiles = scanned.images
-        // Keep a new note that has not been written yet.
-        if let selected, !found.contains(where: { $0.id == selected.id }), !FileManager.default.fileExists(atPath: selected.url.path) {
-            found.insert(selected, at: 0)
+    @discardableResult
+    func refresh() -> Bool {
+        guard let vault else { return false }
+        do {
+            let scanned = try scan(vault)
+            var found = scanned.notes
+            imageFiles = scanned.images
+            // Keep the buffer addressable even if another app removed its file.
+            if let selected, !found.contains(where: { $0.id == selected.id }) {
+                found.insert(selected, at: 0)
+            }
+            notes = found
+            reloadIfChangedOnDisk()
+            return true
+        } catch {
+            report(error, at: vault, kind: .read) { [weak self] in self?.refresh() }
+            return false
         }
-        notes = found
-        reloadIfChangedOnDisk()
     }
 
-    private func scan(_ vault: URL) -> (notes: [Note], images: [String: URL]) {
+    private func scan(_ vault: URL) throws -> (notes: [Note], images: [String: URL]) {
+        _ = try FileManager.default.contentsOfDirectory(at: vault, includingPropertiesForKeys: nil)
+        var scanError: Error?
         guard let files = FileManager.default.enumerator(
             at: vault,
             includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return ([], [:]) }
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, error in scanError = error; return false }
+        ) else { throw CocoaError(.fileReadUnknown) }
         var notes: [Note] = []
         var images: [String: URL] = [:]
         for case let url as URL in files {
@@ -107,22 +135,31 @@ final class NoteStore {
                 images[url.lastPathComponent.lowercased()] = url.standardizedFileURL
             }
         }
+        if let scanError { throw scanError }
         return (notes.sorted { $0.modified > $1.modified }, images)
     }
 
-    private func reloadIfChangedOnDisk() {
-        guard let note = selected, !isDirty,
-              let modified = Self.modificationDate(note.url), modified != loadedModified,
-              let text = try? String(contentsOf: note.url, encoding: .utf8) else { return }
-        content = text
-        loadedModified = modified
+    @discardableResult
+    private func reloadIfChangedOnDisk() -> Bool {
+        guard let note = selected, !isDirty, baseline != nil else { return false }
+        do {
+            let data = try NotePersistence.read(note.url)
+            guard data != baseline else { return false }
+            content = try NotePersistence.text(data)
+            baseline = data
+            clearIssue()
+            return true
+        } catch {
+            report(error, at: note.url, kind: .read) { [weak self] in self?.reloadCurrentNote() }
+            return false
+        }
     }
 
     // MARK: Notes
 
     func select(_ id: URL?) {
         guard let id, id != selectedID else { return }
-        leaveCurrentNote()
+        guard leaveCurrentNote() else { return }
         load(id)
     }
 
@@ -140,7 +177,7 @@ final class NoteStore {
     /// Starts a note where Obsidian puts new notes. It is written to disk on the first edit.
     func create(named requested: String? = nil) {
         guard let vault else { return }
-        leaveCurrentNote()
+        guard leaveCurrentNote() else { return }
         let folder = Obsidian.newNoteFolder(in: vault, current: selected?.url)
         let base = requested.flatMap(Self.fileName) ?? "Untitled"
         var name = base
@@ -153,68 +190,121 @@ final class NoteStore {
         notes.insert(Note(url: url, modified: .now), at: 0)
         createdHere.insert(url)
         content = ""
-        loadedModified = nil
+        baseline = nil
         isDirty = false
+        canEdit = true
+        clearIssue()
         selectedID = url
-        UserDefaults.standard.set(url.path, forKey: Self.lastNoteKey)
+        defaults.set(url.path, forKey: Self.lastNoteKey)
     }
 
     /// Saves the open note. A note started in Portal and still called "Untitled" is renamed
     /// after its first line, or forgotten if it was never written.
-    func leaveCurrentNote() {
-        flush()
-        guard let note = selected, createdHere.contains(note.id), note.title.wholeMatch(of: /Untitled( \d+)?/) != nil else { return }
-        guard FileManager.default.fileExists(atPath: note.url.path) else {
+    @discardableResult
+    func leaveCurrentNote() -> Bool {
+        guard flush() else { return false }
+        guard let note = selected, createdHere.contains(note.id), note.title.wholeMatch(of: /Untitled( \d+)?/) != nil else { return true }
+        guard let baseline else {
             notes.removeAll { $0.id == note.id }
-            return
+            createdHere.remove(note.id)
+            selectedID = nil
+            canEdit = false
+            return true
         }
-        guard let name = Self.firstLineName(content) else { return }
+        guard let name = Self.firstLineName(content) else { return true }
         let target = note.url.deletingLastPathComponent().appending(path: name + ".md").standardizedFileURL
-        guard !FileManager.default.fileExists(atPath: target.path),
-              (try? FileManager.default.moveItem(at: note.url, to: target)) != nil else { return }
+        guard target != note.url else { return true }
+        do {
+            guard try NotePersistence.rename(note.url, to: target, baseline: baseline) else { return true }
+        } catch {
+            isDirty = true
+            report(error, at: note.url, kind: .save) { [weak self] in self?.leaveCurrentNote() }
+            return false
+        }
         if let index = notes.firstIndex(where: { $0.id == note.id }) {
             notes[index] = Note(url: target, modified: notes[index].modified)
         }
         selectedID = target
-        UserDefaults.standard.set(target.path, forKey: Self.lastNoteKey)
+        createdHere.remove(note.id)
+        createdHere.insert(target)
+        defaults.set(target.path, forKey: Self.lastNoteKey)
+        return true
     }
 
     private func load(_ id: URL) {
-        content = (try? String(contentsOf: id, encoding: .utf8)) ?? ""
-        loadedModified = Self.modificationDate(id)
-        isDirty = false
-        selectedID = id
-        UserDefaults.standard.set(id.path, forKey: Self.lastNoteKey)
+        do {
+            let data = try NotePersistence.read(id)
+            let text = try NotePersistence.text(data)
+            content = text
+            baseline = data
+            isDirty = false
+            canEdit = true
+            selectedID = id
+            defaults.set(id.path, forKey: Self.lastNoteKey)
+            clearIssue()
+        } catch {
+            report(error, at: id, kind: .read) { [weak self] in self?.selectAfterSaving(id) }
+        }
+    }
+
+    private func selectAfterSaving(_ id: URL) {
+        guard leaveCurrentNote() else { return }
+        load(id)
     }
 
     /// Opens today's daily note, creating it from the daily note template like Obsidian's Daily Notes plugin.
     func openDailyNote(on date: Date = .now) {
-        guard let vault else { return }
+        // Nothing else (especially rollover deletion) may run until this buffer is safe.
+        guard let vault, leaveCurrentNote() else { return }
         let settings = Obsidian.dailyNoteSettings(in: vault)
         let name = Obsidian.format(date, settings.format)
         let url = vault.appending(path: settings.folder, directoryHint: .isDirectory)
             .appending(path: name + ".md").standardizedFileURL
         if !FileManager.default.fileExists(atPath: url.path) {
-            let template = settings.template.flatMap { path in
+            var template = ""
+            if let path = settings.template {
                 let file = vault.appending(path: path.hasSuffix(".md") ? path : path + ".md")
-                return try? String(contentsOf: file, encoding: .utf8)
+                do {
+                    template = try NotePersistence.text(NotePersistence.read(file))
+                } catch {
+                    report(error, at: file, kind: .read) { [weak self] in self?.openDailyNote(on: date) }
+                    return
+                }
             }
-            var text = Obsidian.fillTemplate(template ?? "", title: name, date: date, dateFormat: settings.format)
+            var text = Obsidian.fillTemplate(template, title: name, date: date, dateFormat: settings.format)
             // Roll unfinished todos over like the Rollover Daily Todos plugin. When Obsidian is open the plugin
             // does it itself as soon as it sees the new note, so Portal only picks up its edit.
             let rollover = Obsidian.rolloverSettings(in: vault).flatMap { $0.rolloverOnFileCreate ? $0 : nil }
             let pluginRollsOver = rollover != nil && isObsidianRunning()
+            var removal: RolloverRemoval?
             if let rollover, !pluginRollsOver, let previous = previousDailyNote(before: date, settings: settings) {
-                text = roll(from: previous, into: text, settings: rollover)
+                do {
+                    (text, removal) = try roll(from: previous, into: text, settings: rollover, destination: url)
+                } catch {
+                    report(error, at: previous, kind: .read) { [weak self] in self?.openDailyNote(on: date) }
+                    return
+                }
             }
-            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            guard (try? text.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
+            // Keep even a failed daily-note write available for Save a Copy.
+            if !notes.contains(where: { $0.id == url }) {
+                notes.insert(Note(url: url, modified: .now), at: 0)
+            }
+            selectedID = url
+            content = text
+            baseline = nil
+            canEdit = true
+            isDirty = true
+            defaults.set(url.path, forKey: Self.lastNoteKey)
+            guard flush() else { return }
+            // Copy first, delete second: a failure can duplicate todos, never lose them.
+            if let removal { completeRollover(removal) }
             if pluginRollsOver { reloadAfterExternalEdit(of: url) }
+            return
         }
         if !notes.contains(where: { $0.id == url }) {
             notes.insert(Note(url: url, modified: .now), at: 0)
         }
-        select(url)
+        load(url)
     }
 
     /// The most recent daily note before `date`.
@@ -232,24 +322,45 @@ final class NoteStore {
     }
 
     /// Copies the previous daily note's unfinished todos into `text`, as the Rollover Daily Todos plugin does.
-    private func roll(from previous: URL, into text: String, settings: Obsidian.RolloverSettings) -> String {
-        guard let previousText = try? String(contentsOf: previous, encoding: .utf8) else { return text }
+    private struct RolloverRemoval {
+        let url: URL
+        let baseline: Data
+        let updated: Data
+        let destination: URL
+        let savedCopy: Data
+    }
+
+    private func roll(from previous: URL, into text: String, settings: Obsidian.RolloverSettings, destination: URL) throws -> (String, RolloverRemoval?) {
+        let data = try NotePersistence.read(previous)
+        let previousText = try NotePersistence.text(data)
         let found = Obsidian.unfinishedTodos(in: previousText, settings: settings)
         let todos = settings.removeEmptyTodos
             ? found.filter { !["- [ ]", "- [  ]"].contains($0.trimmingCharacters(in: .whitespaces)) }
             : found
-        guard !todos.isEmpty else { return text }
+        guard !todos.isEmpty else { return (text, nil) }
 
         let block = "\n" + todos.joined(separator: "\n")
         var result = text + block
         if settings.templateHeading != "none", let heading = text.range(of: settings.templateHeading) {
             result = text.replacingCharacters(in: heading, with: settings.templateHeading + block)
         }
+        var removal: RolloverRemoval?
         if settings.deleteOnComplete {
             let kept = previousText.split(separator: "\n", omittingEmptySubsequences: false).filter { !found.contains(String($0)) }
-            try? kept.joined(separator: "\n").write(to: previous, atomically: true, encoding: .utf8)
+            removal = RolloverRemoval(url: previous, baseline: data, updated: Data(kept.joined(separator: "\n").utf8),
+                                      destination: destination, savedCopy: Data(result.utf8))
         }
-        return result
+        return (result, removal)
+    }
+
+    private func completeRollover(_ removal: RolloverRemoval) {
+        do {
+            try NotePersistence.removeRolledTodos(removal.updated, from: removal.url, baseline: removal.baseline,
+                                                 copiedTo: removal.destination, savedCopy: removal.savedCopy)
+            clearIssue()
+        } catch {
+            report(error, at: removal.url, kind: .save) { [weak self] in self?.completeRollover(removal) }
+        }
     }
 
     /// Reloads `url` once something else edits it, for a few seconds, unless you have started typing.
@@ -258,10 +369,7 @@ final class NoteStore {
             for _ in 0..<12 {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard let self, self.selectedID == url, !self.isDirty else { return }
-                if Self.modificationDate(url) != self.loadedModified {
-                    self.reloadIfChangedOnDisk()
-                    return
-                }
+                if self.reloadIfChangedOnDisk() { return }
             }
         }
     }
@@ -311,14 +419,68 @@ final class NoteStore {
 
     // MARK: Saving
 
-    func flush() {
+    @discardableResult
+    func flush() -> Bool {
         saveTask?.cancel()
-        guard isDirty, let note = selected else { return }
-        isDirty = false
-        try? FileManager.default.createDirectory(at: note.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? content.write(to: note.url, atomically: true, encoding: .utf8)
-        loadedModified = Self.modificationDate(note.url)
-        if let index = notes.firstIndex(where: { $0.id == note.id }) { notes[index].modified = .now }
+        guard isDirty else { return true }
+        guard let note = selected else { return false }
+        let data = Data(content.utf8)
+        do {
+            try NotePersistence.write(data, to: note.url, baseline: baseline)
+            baseline = data
+            isDirty = false
+            clearIssue()
+            if let index = notes.firstIndex(where: { $0.id == note.id }) { notes[index].modified = .now }
+            return true
+        } catch {
+            report(error, at: note.url, kind: .save) { [weak self] in self?.flush() }
+            return false
+        }
+    }
+
+    var canRetry: Bool { retryAction != nil }
+
+    func retry() { retryAction?() }
+
+    /// The caller must confirm discarding edits. A failed read never changes the buffer.
+    func reloadCurrentNote(discardChanges: Bool = false) {
+        guard let selectedID, !isDirty || discardChanges else { return }
+        saveTask?.cancel()
+        load(selectedID)
+    }
+
+    /// Switches to the saved copy only after its exclusive creation succeeds.
+    @discardableResult
+    func saveCopy(to url: URL) -> Bool {
+        guard canEdit else { return false }
+        saveTask?.cancel()
+        let data = Data(content.utf8)
+        do {
+            let copy = try NotePersistence.saveCopy(data, to: url.standardizedFileURL)
+            if let selected, baseline == nil, !FileManager.default.fileExists(atPath: selected.url.path) {
+                notes.removeAll { $0.id == selected.id }
+            }
+            notes.insert(Note(url: copy, modified: .now), at: 0)
+            selectedID = copy
+            baseline = data
+            isDirty = false
+            defaults.set(copy.path, forKey: Self.lastNoteKey)
+            clearIssue()
+            return true
+        } catch {
+            report(error, at: url, kind: .save) { [weak self] in self?.saveCopy(to: url) }
+            return false
+        }
+    }
+
+    private func report(_ error: Error, at url: URL, kind: NoteIssue.Kind, retry: (() -> Void)? = nil) {
+        issue = NoteIssue(kind: (error as? NoteFileError) == .conflict ? .conflict : kind, url: url, message: error.localizedDescription)
+        retryAction = retry
+    }
+
+    private func clearIssue() {
+        issue = nil
+        retryAction = nil
     }
 
     private func scheduleSave() {
