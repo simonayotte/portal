@@ -4,6 +4,7 @@ import SwiftUI
 /// are hidden everywhere except the line being edited.
 struct MarkdownEditor: NSViewRepresentable {
     @Binding var text: String
+    @Binding var vimMode: VimMode
 
     static let inset = NSSize(width: 18, height: 14)
 
@@ -12,6 +13,9 @@ struct MarkdownEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let textView = MarkdownTextView.make()
         textView.delegate = context.coordinator
+        textView.vim.onModeChange = { [vimMode = $vimMode] mode in
+            Task { @MainActor in vimMode.wrappedValue = mode }
+        }
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -44,6 +48,7 @@ struct MarkdownEditor: NSViewRepresentable {
             textView.restyle()
             textView.updateActiveLine()
             textView.undoManager?.removeAllActions()
+            textView.vim.reset()
         }
 
         func textDidChange(_ notification: Notification) {
@@ -69,8 +74,10 @@ struct MarkdownEditor: NSViewRepresentable {
     }
 }
 
-/// TextKit 1 text view with Markdown editing behaviors: list continuation, list indenting and ⌘B / ⌘I.
+/// TextKit 1 text view with Markdown editing behaviors: Vim keys, list continuation, list indenting and shortcuts.
 final class MarkdownTextView: NSTextView {
+    lazy var vim = VimEngine(view: self)
+
     private static let listPrefix = try! NSRegularExpression(
         pattern: #"^([ \t]*)(?:([-*+])[ \t]+(\[[ xX]\][ \t]+)?|(\d+)([.)])[ \t]+|(>)[ \t]?)"#
     )
@@ -93,6 +100,15 @@ final class MarkdownTextView: NSTextView {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
         return textView
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if !vim.handle(event) { super.keyDown(with: event) }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        vim.didClick()
     }
 
     private var markdownLayoutManager: MarkdownLayoutManager? { layoutManager as? MarkdownLayoutManager }
@@ -185,16 +201,45 @@ final class MarkdownTextView: NSTextView {
     // MARK: Formatting shortcuts
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard window?.firstResponder === self,
-              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else {
-            return super.performKeyEquivalent(with: event)
-        }
-        switch event.charactersIgnoringModifiers {
-        case "b": toggleWrap("**")
-        case "i": toggleWrap("*")
+        guard window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        switch (modifiers, event.charactersIgnoringModifiers?.lowercased()) {
+        case (.command, "b"): toggleWrap("**")
+        case (.command, "i"): toggleWrap("*")
+        case (.command, "l"): toggleTask()
+        case ([.command, .shift], "k"): insertLink()
         default: return super.performKeyEquivalent(with: event)
         }
         return true
+    }
+
+    /// Turns the current line into a task, or checks / unchecks it when it already is one.
+    func toggleTask() {
+        let (line, prefix) = currentLine()
+        let text = string as NSString
+        let caret = selectedRange()
+        func insert(_ marker: String, at location: Int) {
+            let shift = caret.location >= location ? (marker as NSString).length : 0
+            replace(NSRange(location: location, length: 0), with: marker, select: NSRange(location: caret.location + shift, length: caret.length))
+        }
+
+        if let box = prefix?.range(at: 3), box.location != NSNotFound {
+            let mark = NSRange(location: box.location + 1, length: 1)
+            replace(mark, with: text.substring(with: mark) == " " ? "x" : " ", select: caret)
+        } else if let prefix, prefix.range(at: 2).location != NSNotFound {
+            insert("[ ] ", at: NSMaxRange(prefix.range))
+        } else {
+            let indent = text.substring(with: line).prefix { $0 == " " || $0 == "\t" }.utf16.count
+            insert("- [ ] ", at: line.location + indent)
+        }
+    }
+
+    /// Wraps the selection as link text and puts the caret in the URL, or inserts an empty link.
+    func insertLink() {
+        let selection = selectedRange()
+        let selected = (string as NSString).substring(with: selection)
+        let caret = selected.isEmpty ? selection.location + 1 : NSMaxRange(selection) + 3
+        replace(selection, with: "[\(selected)]()", select: NSRange(location: caret, length: 0))
     }
 
     /// Wraps the selection in `marker`, or unwraps it when it is already wrapped.

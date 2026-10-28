@@ -28,9 +28,10 @@ struct ContentView: View {
     @Bindable var store: NoteStore
     @State private var tooltip: ToolbarAction?
     @State private var hoverTask: Task<Void, Never>?
+    @State private var vimMode = VimMode.normal
 
     var body: some View {
-        MarkdownEditor(text: $store.text)
+        MarkdownEditor(text: $store.text, vimMode: $vimMode)
             .overlay(alignment: .topLeading) {
                 if store.text.isEmpty {
                     Text("Start writing...")
@@ -49,6 +50,11 @@ struct ContentView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .topTrailing)))
                         .allowsHitTesting(false)
                 }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                VimModePill(mode: vimMode)
+                    .padding(12)
+                    .allowsHitTesting(false)
             }
             .frame(minWidth: 280, minHeight: 220)
             .containerBackground(.thickMaterial, for: .window)
@@ -117,6 +123,21 @@ private struct Tooltip: View {
         .padding(.vertical, 6)
         .glassEffect(.regular, in: .capsule)
         .fixedSize()
+    }
+}
+
+private struct VimModePill: View {
+    let mode: VimMode
+
+    var body: some View {
+        Text(mode.label)
+            .font(.caption.weight(.semibold).monospaced())
+            .foregroundStyle(.secondary)
+            .contentTransition(.interpolate)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .glassEffect(.regular, in: .capsule)
+            .animation(.snappy(duration: 0.2), value: mode)
     }
 }
 
